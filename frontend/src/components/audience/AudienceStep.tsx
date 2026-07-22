@@ -1,0 +1,222 @@
+import { useRef, useState } from "react"
+import {
+  flexRender,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getSortedRowModel,
+  useReactTable,
+  type SortingState,
+} from "@tanstack/react-table"
+import { FileUp, Filter, Plus, Search, Upload, UserPlus } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { toast } from "sonner"
+import { cn } from "@/lib/utils"
+import { useLeadColumns } from "./useLeadColumns"
+import { LeadDialog } from "./LeadDialog"
+import { leadsToCsv, parseLeadsCsv } from "@/lib/csv"
+import type { Lead } from "@/lib/types"
+
+interface AudienceStepProps {
+  leads: Lead[]
+  onChange: (leads: Lead[]) => void
+}
+
+/** Step 1 — the recipient / leads table. */
+export function AudienceStep({ leads, onChange }: AudienceStepProps) {
+  const [globalFilter, setGlobalFilter] = useState("")
+  const [sorting, setSorting] = useState<SortingState>([])
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [editingLead, setEditingLead] = useState<Lead | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const columns = useLeadColumns({
+    onEditTime: (id, value) =>
+      onChange(leads.map((l) => (l.id === id ? { ...l, sendTimeIST: value } : l))),
+    onDelete: (id) => onChange(leads.filter((l) => l.id !== id)),
+    onEdit: (lead) => {
+      setEditingLead(lead)
+      setDialogOpen(true)
+    },
+  })
+
+  function openAdd() {
+    setEditingLead(null)
+    setDialogOpen(true)
+  }
+
+  function handleSaveLead(lead: Lead) {
+    const exists = leads.some((l) => l.id === lead.id)
+    if (exists) {
+      onChange(leads.map((l) => (l.id === lead.id ? lead : l)))
+      toast.success("Lead updated")
+    } else {
+      onChange([...leads, lead])
+      toast.success("Lead added")
+    }
+  }
+
+  const table = useReactTable({
+    data: leads,
+    columns,
+    state: { globalFilter, sorting },
+    onGlobalFilterChange: setGlobalFilter,
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  })
+
+  async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const imported = await parseLeadsCsv(file)
+      onChange([...leads, ...imported])
+      toast.success(`Imported ${imported.length} recipients`)
+    } catch {
+      toast.error("Could not parse that CSV file")
+    } finally {
+      if (fileRef.current) fileRef.current.value = ""
+    }
+  }
+
+  function handleExport() {
+    const blob = new Blob([leadsToCsv(leads)], { type: "text/csv" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = "recipients.csv"
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="w-full px-6 py-6">
+      {/* Toolbar */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-muted-foreground">
+          {leads.length} recipients
+        </span>
+        <div className="relative ml-1 w-72 max-w-full">
+          <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={globalFilter}
+            onChange={(e) => setGlobalFilter(e.target.value)}
+            placeholder="Search by name, email, company or website…"
+            className="h-9 pl-8"
+          />
+        </div>
+        <Button variant="outline" size="sm" className="gap-1.5">
+          <Filter className="size-4" /> Filters
+        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={handleImport}
+          />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1.5">
+                <Plus className="size-4" /> Add recipients
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem onSelect={openAdd}>
+                <UserPlus className="size-4" /> Add one lead
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => fileRef.current?.click()}>
+                <FileUp className="size-4" /> Import from CSV
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExport}>
+            <Upload className="size-4" /> Export
+          </Button>
+        </div>
+      </div>
+
+      {/* Table (horizontally scrollable; Actions column stays pinned) */}
+      <div className="overflow-hidden rounded-xl border bg-card">
+        <Table>
+          <TableHeader>
+            {table.getHeaderGroups().map((hg) => (
+              <TableRow key={hg.id} className="bg-muted/60 hover:bg-muted/60">
+                {hg.headers.map((header) => {
+                  const meta = header.column.columnDef.meta
+                  return (
+                    <TableHead
+                      key={header.id}
+                      onClick={header.column.getToggleSortingHandler()}
+                      style={meta?.minWidth ? { minWidth: meta.minWidth } : undefined}
+                      className={cn(
+                        header.column.getCanSort() && "cursor-pointer select-none",
+                        meta?.sticky &&
+                          "sticky right-0 z-10 bg-muted/60 shadow-[-8px_0_8px_-6px_rgba(0,0,0,0.12)]"
+                      )}
+                    >
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                    </TableHead>
+                  )
+                })}
+              </TableRow>
+            ))}
+          </TableHeader>
+          <TableBody>
+            {table.getRowModel().rows.length ? (
+              table.getRowModel().rows.map((row) => (
+                <TableRow key={row.id} className="group">
+                  {row.getVisibleCells().map((cell) => {
+                    const meta = cell.column.columnDef.meta
+                    return (
+                      <TableCell
+                        key={cell.id}
+                        style={meta?.minWidth ? { minWidth: meta.minWidth } : undefined}
+                        className={cn(
+                          meta?.sticky &&
+                            "sticky right-0 z-10 bg-card shadow-[-8px_0_8px_-6px_rgba(0,0,0,0.12)] group-hover:bg-muted/50"
+                        )}
+                      >
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </TableCell>
+                    )
+                  })}
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={columns.length} className="h-24 text-center text-muted-foreground">
+                  No recipients yet. Import a CSV to get started.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      <LeadDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        lead={editingLead}
+        onSave={handleSaveLead}
+      />
+    </div>
+  )
+}
