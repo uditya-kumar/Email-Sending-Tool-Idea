@@ -89,6 +89,7 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
       jobTitle: form.jobTitle.trim() || undefined,
       website: form.website.trim() || undefined,
       verification: lead?.verification ?? "not_verified",
+      status: lead?.status ?? "draft",
     })
     onOpenChange(false)
   }

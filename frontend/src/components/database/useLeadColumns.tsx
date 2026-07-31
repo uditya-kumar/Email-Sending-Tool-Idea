@@ -1,9 +1,10 @@
 import { useMemo } from "react"
 import type { ColumnDef, RowData } from "@tanstack/react-table"
-import { Pencil, Trash2 } from "lucide-react"
+import { Pencil, Send, Trash2 } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { LeadStatusBadge } from "@/components/common/StatusBadge"
 import type { Lead } from "@/lib/types"
 
 // Extend TanStack column meta with our layout hints.
@@ -20,13 +21,16 @@ interface UseLeadColumnsArgs {
   onEditTime: (id: string, value: string) => void
   onDelete: (id: string) => void
   onEdit: (lead: Lead) => void
+  /** Opens this recipient's own Content → Preview → Launch flow. */
+  onSend: (lead: Lead) => void
 }
 
-/** TanStack column definitions for the Audience leads table. */
+/** TanStack column definitions for the Database leads table. */
 export function useLeadColumns({
   onEditTime,
   onDelete,
   onEdit,
+  onSend,
 }: UseLeadColumnsArgs): ColumnDef<Lead>[] {
   return useMemo<ColumnDef<Lead>[]>(
     () => [
@@ -128,12 +132,27 @@ export function useLeadColumns({
         meta: { minWidth: "140px" },
       },
       {
+        accessorKey: "status",
+        header: "Status",
+        cell: ({ row }) => <LeadStatusBadge status={row.original.status} />,
+        meta: { minWidth: "120px" },
+      },
+      {
         id: "actions",
         header: "Actions",
         enableSorting: false,
-        meta: { sticky: true },
+        meta: { sticky: true, minWidth: "180px" },
         cell: ({ row }) => (
           <div className="flex items-center gap-1">
+            {/* Entry point into this recipient's own compose flow. */}
+            <Button
+              size="sm"
+              className="gap-1.5"
+              onClick={() => onSend(row.original)}
+            >
+              <Send className="size-3.5" />
+              {row.original.status === "draft" ? "Send" : "Open"}
+            </Button>
             <Button
               variant="outline"
               size="icon-sm"
@@ -154,6 +173,6 @@ export function useLeadColumns({
         ),
       },
     ],
-    [onEditTime, onDelete, onEdit]
+    [onEditTime, onDelete, onEdit, onSend]
   )
 }

@@ -18,8 +18,7 @@ interface SenderPanelProps {
   sender: SenderAccount | null
   onOpenChange: (open: boolean) => void
   onUpdate: (patch: Partial<SenderAccount>) => void
-  /** Sequences using this account (for the Usage tab). */
-  sequenceName?: string
+  /** Database totals shown on the Usage tab. */
   recipientsAllocated?: number
   emailsScheduled?: number
 }
@@ -33,7 +32,6 @@ export function SenderPanel({
   sender,
   onOpenChange,
   onUpdate,
-  sequenceName = "New sequence 22-Jul-2026",
   recipientsAllocated = 0,
   emailsScheduled = 0,
 }: SenderPanelProps) {
@@ -144,7 +142,6 @@ export function SenderPanel({
               <TabsContent value="usage" className="mt-5">
                 <UsageTab
                   sender={sender}
-                  sequenceName={sequenceName}
                   recipientsAllocated={recipientsAllocated}
                   emailsScheduled={emailsScheduled}
                 />
@@ -159,12 +156,10 @@ export function SenderPanel({
 
 function UsageTab({
   sender,
-  sequenceName,
   recipientsAllocated,
   emailsScheduled,
 }: {
   sender: SenderAccount
-  sequenceName: string
   recipientsAllocated: number
   emailsScheduled: number
 }) {
@@ -202,20 +197,24 @@ function UsageTab({
         <SevenDayHistory sent={sent} dailyLimit={sender.dailyLimit} />
       </section>
 
-      {/* Sequences */}
+      {/* Database usage — recipients are launched one at a time. */}
       <section>
         <div className="flex items-center gap-2">
-          <h3 className="font-semibold text-foreground">Sequences</h3>
-          <Badge variant="secondary" className="rounded-full">1</Badge>
+          <h3 className="font-semibold text-foreground">Database</h3>
+          <Badge variant="secondary" className="rounded-full">
+            {recipientsAllocated}
+          </Badge>
         </div>
         <div className="mt-3 flex items-center justify-between border-t pt-3">
           <div>
-            <p className="text-sm font-medium text-foreground">{sequenceName}</p>
+            <p className="text-sm font-medium text-foreground">
+              {recipientsAllocated} recipients
+            </p>
             <p className="text-xs text-muted-foreground">
-              {recipientsAllocated} recipients allocated · {emailsScheduled} emails scheduled
+              {emailsScheduled} launched · {recipientsAllocated - emailsScheduled} still
+              draft
             </p>
           </div>
-          <Badge className="bg-warning/15 text-warning-foreground">Draft</Badge>
         </div>
       </section>
     </div>

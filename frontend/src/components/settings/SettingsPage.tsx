@@ -34,7 +34,7 @@ const WEEKDAYS: { value: Weekday; label: string }[] = [
   { value: 6, label: "Sunday" },
 ]
 
-interface SettingsStepProps {
+interface SettingsPageProps {
   senders: SenderAccount[]
   settings: SequenceSettings
   onSettingsChange: (patch: Partial<SequenceSettings>) => void
@@ -74,14 +74,17 @@ function SectionHeading({ title, description }: { title: string; description: st
   )
 }
 
-/** Step 4 — sender accounts, BCC, tracking, sending window + daily limit. */
-export function SettingsStep({
+/**
+ * Standalone Settings page (opened from the header gear): sender accounts, BCC,
+ * tracking, and the global sending window that every recipient's send respects.
+ */
+export function SettingsPage({
   senders,
   settings,
   onSettingsChange,
   onEditSender,
   onSaveSchedule,
-}: SettingsStepProps) {
+}: SettingsPageProps) {
   function toggleDay(day: Weekday) {
     const has = settings.sendingDays.includes(day)
     const next = has
@@ -92,6 +95,14 @@ export function SettingsStep({
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-8">
+      <div>
+        <h1 className="text-xl font-semibold text-foreground">Settings</h1>
+        <p className="text-sm text-muted-foreground">
+          Sending account, tracking and the global window. These apply to every
+          recipient you launch from the Database.
+        </p>
+      </div>
+
       {/* Sender accounts */}
       <section>
         <SectionHeading
@@ -202,8 +213,8 @@ export function SettingsStep({
       {/* Sending window */}
       <section>
         <SectionHeading
-          title="Sending window for this sequence"
-          description="With your current settings, your sequence will start immediately."
+          title="Sending window"
+          description="Outer bounds for all sends. A recipient's own IST send time still decides when their email goes out — it just has to fall inside this window."
         />
 
         {/* Sending days */}
@@ -280,10 +291,10 @@ export function SettingsStep({
           <div className="flex items-center justify-between gap-4 px-4 py-3.5">
             <div>
               <p className="text-sm font-medium text-foreground">
-                Start the sequence on a specific day
+                Start sends on a specific day
               </p>
               <p className="text-sm text-muted-foreground">
-                You can schedule the launch of your sequence for a future date.
+                Hold launched recipients until this date instead of sending today.
               </p>
             </div>
             <Switch
@@ -304,7 +315,7 @@ export function SettingsStep({
         </div>
 
         <Button className="mt-5" onClick={onSaveSchedule}>
-          Save schedule
+          Save settings
         </Button>
       </section>
     </div>

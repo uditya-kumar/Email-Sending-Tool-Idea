@@ -52,6 +52,7 @@ function rowToLead(row: Record<string, string>): Lead {
     jobTitle: pick(row, "jobtitle", "title", "role") || undefined,
     website: pick(row, "website", "url", "domain") || undefined,
     verification: "not_verified" as VerificationStatus,
+    status: "draft",
   }
 }
 
@@ -67,6 +68,7 @@ export function leadsToCsv(leads: Lead[]): string {
       "Job Title": l.jobTitle ?? "",
       Website: l.website ?? "",
       Verification: l.verification,
+      Status: l.status,
     }))
   )
 }

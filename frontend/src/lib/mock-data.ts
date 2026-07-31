@@ -17,6 +17,7 @@ export const MOCK_LEADS: Lead[] = [
     jobTitle: "CEO",
     website: "https://thumpn.com",
     verification: "not_verified",
+    status: "draft",
   },
   {
     id: "l2",
@@ -28,6 +29,7 @@ export const MOCK_LEADS: Lead[] = [
     jobTitle: "Co-Founder",
     website: "https://getpie.com",
     verification: "not_verified",
+    status: "draft",
   },
   {
     id: "l3",
@@ -39,6 +41,7 @@ export const MOCK_LEADS: Lead[] = [
     jobTitle: "Chief AI Officer",
     website: "https://kapturecx.com",
     verification: "not_verified",
+    status: "draft",
   },
   {
     id: "l4",
@@ -50,6 +53,7 @@ export const MOCK_LEADS: Lead[] = [
     jobTitle: "CEO",
     website: "https://lyzr.ai",
     verification: "not_verified",
+    status: "draft",
   },
   {
     id: "l5",
@@ -61,6 +65,7 @@ export const MOCK_LEADS: Lead[] = [
     jobTitle: "Founding Head of Engineering",
     website: "https://primeintellect.ai",
     verification: "not_verified",
+    status: "draft",
   },
   {
     id: "l6",
@@ -72,6 +77,7 @@ export const MOCK_LEADS: Lead[] = [
     jobTitle: "Founder",
     website: "https://esgagent.ai",
     verification: "not_verified",
+    status: "draft",
   },
   {
     id: "l7",
@@ -83,6 +89,7 @@ export const MOCK_LEADS: Lead[] = [
     jobTitle: "Co-Founder & CEO",
     website: "https://floqer.com",
     verification: "not_verified",
+    status: "draft",
   },
   {
     id: "l8",
@@ -94,6 +101,7 @@ export const MOCK_LEADS: Lead[] = [
     jobTitle: "CEO",
     website: "https://monorale.com",
     verification: "not_verified",
+    status: "draft",
   },
 ]
 
@@ -103,35 +111,40 @@ const OPENING_BODY = `<p>Hi {{first_name:"there"}},</p>
 <p>I'd love to discuss how my experience could contribute to {{company:"your company"}}'s AI engineering team.</p>
 <p>Best,<br>Uditya Kumar Pandey<br><a href="https://linkedin.com/in/udityakumar">linkedin.com/in/udityakumar</a><br>+91 9953076454</p>`
 
-/** Sample sequence: opening → wait → follow-up → wait → follow-up. */
-export const MOCK_SEQUENCE: SequenceStep[] = [
-  {
-    id: "s1",
-    kind: "email",
-    name: "Opening email",
-    subject: 'Interested in building with {{company:"Company"}}',
-    bodyHtml: OPENING_BODY,
-    abTest: false,
-  },
-  { id: "s2", kind: "delay", name: "Wait", waitDays: 3 },
-  {
-    id: "s3",
-    kind: "email",
-    name: "Follow-up #1",
-    subject: "",
-    bodyHtml: "",
-    abTest: false,
-  },
-  { id: "s4", kind: "delay", name: "Wait", waitDays: 3 },
-  {
-    id: "s5",
-    kind: "email",
-    name: "Follow-up #2",
-    subject: "",
-    bodyHtml: "",
-    abTest: false,
-  },
-]
+/**
+ * A fresh sequence for one recipient: opening → wait → follow-up → wait → follow-up.
+ * Each lead gets its own copy so the content can be personalized per recipient.
+ */
+export function newSequenceForLead(leadId: string): SequenceStep[] {
+  return [
+    {
+      id: `${leadId}-s1`,
+      kind: "email",
+      name: "Opening email",
+      subject: 'Interested in building with {{company:"Company"}}',
+      bodyHtml: OPENING_BODY,
+      abTest: false,
+    },
+    { id: `${leadId}-s2`, kind: "delay", name: "Wait", waitDays: 3 },
+    {
+      id: `${leadId}-s3`,
+      kind: "email",
+      name: "Follow-up #1",
+      subject: "",
+      bodyHtml: "",
+      abTest: false,
+    },
+    { id: `${leadId}-s4`, kind: "delay", name: "Wait", waitDays: 3 },
+    {
+      id: `${leadId}-s5`,
+      kind: "email",
+      name: "Follow-up #2",
+      subject: "",
+      bodyHtml: "",
+      abTest: false,
+    },
+  ]
+}
 
 export const MOCK_SENDERS: SenderAccount[] = [
   {

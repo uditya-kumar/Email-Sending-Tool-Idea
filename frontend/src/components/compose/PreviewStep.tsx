@@ -1,13 +1,11 @@
-import { useMemo, useState } from "react"
-import { ChevronDown, ChevronUp, Mail, Search, Send, Sparkles } from "lucide-react"
+import { Clock, Mail, Rocket } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { Input } from "@/components/ui/input"
-import { Switch } from "@/components/ui/switch"
-import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Badge } from "@/components/ui/badge"
 import { renderTags } from "@/lib/merge-tags"
 import { formatIST } from "@/lib/time"
+import { LeadStatusBadge } from "@/components/common/StatusBadge"
 import type { Lead, SequenceStep } from "@/lib/types"
 
 /** A label/value row in the profile panel. Shows "—" when empty. */
@@ -20,8 +18,10 @@ function ProfileRow({ label, value }: { label: string; value?: string }) {
 }
 
 interface PreviewStepProps {
-  leads: Lead[]
-  openingEmail?: SequenceStep
+  lead: Lead
+  /** This recipient's own sequence (emails + waits). */
+  steps: SequenceStep[]
+  onLaunch: () => void
 }
 
 function initials(name: string) {
@@ -34,180 +34,182 @@ function initials(name: string) {
     .toUpperCase()
 }
 
-/** Step 3 — per-recipient rendered preview with a contact profile panel. */
-export function PreviewStep({ leads, openingEmail }: PreviewStepProps) {
-  const [search, setSearch] = useState("")
-  const [selectedId, setSelectedId] = useState(leads[0]?.id ?? "")
+/**
+ * Compose step 2 — the fully rendered emails for ONE recipient, plus the Launch
+ * button. Launch lives only here, so nothing goes out unpreviewed.
+ */
+export function PreviewStep({ lead, steps, onLaunch }: PreviewStepProps) {
+  const emails = steps.filter((s) => s.kind === "email")
+  const written = emails.filter((s) => s.subject || s.bodyHtml)
+  const canLaunch = written.length > 0
 
-  const filtered = useMemo(
-    () =>
-      leads.filter((l) =>
-        `${l.contactFullName} ${l.email} ${l.companyName}`
-          .toLowerCase()
-          .includes(search.toLowerCase())
-      ),
-    [leads, search]
+  // Drop a trailing wait — there's no follow-up after it to introduce.
+  const lastEmailIdx = steps.reduce(
+    (last, s, i) => (s.kind === "email" ? i : last),
+    -1
   )
-
-  const selected = leads.find((l) => l.id === selectedId) ?? filtered[0] ?? leads[0]
-  const selectedIndex = leads.findIndex((l) => l.id === selected?.id)
-
-  const subject = selected && openingEmail?.subject
-    ? renderTags(openingEmail.subject, selected)
-    : ""
-  const bodyHtml = selected && openingEmail?.bodyHtml
-    ? renderTags(openingEmail.bodyHtml, selected)
-    : ""
-
-  function step(delta: number) {
-    const next = leads[selectedIndex + delta]
-    if (next) setSelectedId(next.id)
-  }
+  const visible = steps.filter((_, i) => i <= lastEmailIdx)
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/* Sub-toolbar */}
-      <div className="flex items-center justify-between gap-3 border-b bg-background px-6 py-3">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-medium text-muted-foreground">
-            {leads.length} recipients
-          </span>
-          <div className="relative w-72">
-            <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name or email address…"
-              className="h-9 pl-8"
-            />
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Label htmlFor="personalize" className="gap-1.5 text-sm font-normal text-muted-foreground">
-            <Sparkles className="size-4" /> Personalize emails
-          </Label>
-          <Switch id="personalize" />
+    <div className="flex min-h-0 flex-1">
+      {/* Rendered emails */}
+      <div className="flex-1 overflow-y-auto bg-muted/30 p-6">
+        <div className="mx-auto max-w-2xl space-y-4">
+          {emails.length ? (
+            visible.map((step) =>
+              step.kind === "delay" ? (
+                <WaitDivider key={step.id} days={step.waitDays ?? 3} />
+              ) : (
+                <RenderedEmail key={step.id} step={step} lead={lead} />
+              )
+            )
+          ) : (
+            <div className="rounded-xl border border-dashed bg-card p-10 text-center text-muted-foreground">
+              No emails in this sequence yet. Add a step on the Content tab.
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        {/* Recipient list */}
-        <div className="w-72 shrink-0 overflow-y-auto border-r bg-background">
-          {filtered.map((lead) => (
-            <button
-              key={lead.id}
-              onClick={() => setSelectedId(lead.id)}
-              className={cn(
-                "flex w-full flex-col items-start gap-0.5 border-b px-4 py-3 text-left transition-colors",
-                lead.id === selected?.id ? "bg-accent/10" : "hover:bg-muted/50"
+      {/* Recipient panel + Launch */}
+      <div className="flex w-80 shrink-0 flex-col overflow-y-auto border-l bg-background">
+        <div className="flex-1 p-5">
+          <div className="flex items-center gap-3">
+            <Avatar className="size-12 bg-accent/15">
+              <AvatarFallback className="bg-accent/15 font-medium text-accent">
+                {initials(lead.contactFullName || lead.email)}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0">
+              <h3 className="truncate font-semibold text-foreground">
+                {lead.contactFullName || "—"}
+              </h3>
+              <p className="truncate text-sm text-muted-foreground">{lead.email}</p>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <LeadStatusBadge status={lead.status} />
+          </div>
+
+          <div className="mt-5 space-y-5 text-sm">
+            <div className="space-y-1">
+              <p className="font-semibold text-foreground">Profile</p>
+              <ProfileRow label="Full name" value={lead.contactFullName} />
+              <ProfileRow label="Job title" value={lead.jobTitle} />
+            </div>
+
+            <div className="space-y-1">
+              <p className="font-semibold text-foreground">Organization</p>
+              <ProfileRow label="Company" value={lead.companyName} />
+              {lead.website ? (
+                <p className="text-muted-foreground">
+                  Website:{" "}
+                  <a
+                    href={lead.website}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-accent underline-offset-2 hover:underline"
+                  >
+                    {lead.website.replace(/^https?:\/\//, "")}
+                  </a>
+                </p>
+              ) : (
+                <ProfileRow label="Website" value={undefined} />
               )}
-            >
-              <span className="text-sm font-medium text-foreground">
-                {lead.contactFullName}
-              </span>
-              <span className="text-xs text-muted-foreground">
-                {lead.jobTitle ? `${lead.jobTitle} at ${lead.companyName}` : lead.email}
-              </span>
-            </button>
-          ))}
-        </div>
+            </div>
 
-        {/* Rendered email */}
-        <div className="flex-1 overflow-y-auto bg-muted/30 p-6">
-          <div className="mx-auto max-w-2xl overflow-hidden rounded-xl border bg-card shadow-sm">
-            <div className="flex items-center justify-between border-b px-4 py-3">
-              <span className="flex items-center gap-2 font-medium text-foreground">
-                <Mail className="size-4 text-muted-foreground" />
-                {openingEmail?.name ?? "Opening email"}
-              </span>
-              <Send className="size-4 text-muted-foreground" />
+            <div className="space-y-1">
+              <p className="font-semibold text-foreground">Outreach</p>
+              <ProfileRow label="Personalization" value={lead.personalizationLine} />
+              <ProfileRow label="Send time" value={formatIST(lead.sendTimeIST)} />
+              <p className="text-muted-foreground">
+                Emails ready:{" "}
+                <span className="text-foreground">
+                  {written.length} of {emails.length}
+                </span>
+              </p>
             </div>
-            <div className="border-b px-4 py-3 text-sm">
-              <span className="text-muted-foreground">Subject: </span>
-              <span className="font-medium text-foreground">{subject || "—"}</span>
-            </div>
-            <div
-              className="prose-email px-4 py-4 text-sm leading-relaxed [&_a]:text-accent [&_a]:underline [&_p]:mb-3"
-              dangerouslySetInnerHTML={{ __html: bodyHtml || "<p>No content yet.</p>" }}
-            />
           </div>
         </div>
 
-        {/* Profile panel */}
-        {selected && (
-          <div className="w-72 shrink-0 overflow-y-auto border-l bg-background p-5">
-            <div className="mb-4 flex items-start justify-between">
-              <div className="flex gap-1">
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  onClick={() => step(-1)}
-                  disabled={selectedIndex <= 0}
-                  aria-label="Previous recipient"
-                >
-                  <ChevronUp />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  onClick={() => step(1)}
-                  disabled={selectedIndex >= leads.length - 1}
-                  aria-label="Next recipient"
-                >
-                  <ChevronDown />
-                </Button>
-              </div>
-              <Avatar className="size-14 bg-accent/15">
-                <AvatarFallback className="bg-accent/15 text-lg font-medium text-accent">
-                  {initials(selected.contactFullName)}
-                </AvatarFallback>
-              </Avatar>
-            </div>
+        {/* Launch — the only place a send can be started. */}
+        <div className="sticky bottom-0 border-t bg-background p-4">
+          <Button
+            className="w-full gap-1.5"
+            size="lg"
+            disabled={!canLaunch}
+            onClick={onLaunch}
+          >
+            <Rocket className="size-4" />
+            {lead.status === "draft" ? "Launch" : "Reschedule"}
+          </Button>
+          <p className="mt-2 text-center text-xs text-muted-foreground">
+            {canLaunch
+              ? `Sends at ${formatIST(lead.sendTimeIST)} to ${lead.email}`
+              : "Add email content before launching."}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
 
-            <h3 className="text-lg font-semibold text-foreground">
-              {selected.contactFullName}
-            </h3>
-            <p className="text-sm text-muted-foreground">{selected.email}</p>
+/** One rendered email card with merge tags resolved for this lead. */
+function RenderedEmail({ step, lead }: { step: SequenceStep; lead: Lead }) {
+  const subject = step.subject ? renderTags(step.subject, lead) : ""
+  const bodyHtml = step.bodyHtml ? renderTags(step.bodyHtml, lead) : ""
+  const isEmpty = !step.subject && !step.bodyHtml
 
-            <div className="mt-5 space-y-5 text-sm">
-              <div className="space-y-1">
-                <p className="font-semibold text-foreground">Profile</p>
-                <ProfileRow label="Full name" value={selected.contactFullName} />
-                <ProfileRow label="Job title" value={selected.jobTitle} />
-              </div>
-
-              <div className="space-y-1">
-                <p className="font-semibold text-foreground">Organization</p>
-                <ProfileRow label="Company" value={selected.companyName} />
-                {selected.website ? (
-                  <p className="text-muted-foreground">
-                    Website:{" "}
-                    <a
-                      href={selected.website}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-accent underline-offset-2 hover:underline"
-                    >
-                      {selected.website.replace(/^https?:\/\//, "")}
-                    </a>
-                  </p>
-                ) : (
-                  <ProfileRow label="Website" value={undefined} />
-                )}
-              </div>
-
-              <div className="space-y-1">
-                <p className="font-semibold text-foreground">Outreach</p>
-                <ProfileRow
-                  label="Personalization"
-                  value={selected.personalizationLine}
-                />
-                <ProfileRow label="Send time" value={formatIST(selected.sendTimeIST)} />
-              </div>
-            </div>
-          </div>
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-xl border bg-card shadow-sm",
+        isEmpty && "border-dashed opacity-70 shadow-none"
+      )}
+    >
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <span className="flex items-center gap-2 font-medium text-foreground">
+          <Mail className="size-4 text-muted-foreground" />
+          {step.name}
+        </span>
+        {isEmpty ? (
+          <Badge variant="secondary" className="text-muted-foreground">
+            Not written — won't send
+          </Badge>
+        ) : (
+          <Badge variant="secondary">To: {lead.email}</Badge>
         )}
       </div>
+      <div className="border-b px-4 py-3 text-sm">
+        <span className="text-muted-foreground">Subject: </span>
+        <span className={cn(isEmpty ? "text-muted-foreground italic" : "font-medium text-foreground")}>
+          {subject || "(blank — sends as a reply in the same thread)"}
+        </span>
+      </div>
+      {isEmpty ? (
+        <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+          Nothing written for this follow-up yet. Add content on the Content tab, or
+          delete the step.
+        </p>
+      ) : (
+        <div
+          className="prose-email px-4 py-4 text-sm leading-relaxed [&_a]:text-accent [&_a]:underline [&_p]:mb-3"
+          dangerouslySetInnerHTML={{ __html: bodyHtml }}
+        />
+      )}
+    </div>
+  )
+}
+
+function WaitDivider({ days }: { days: number }) {
+  return (
+    <div className="flex items-center gap-3 px-2 text-sm text-muted-foreground">
+      <span className="h-px flex-1 bg-border" />
+      <span className="flex items-center gap-1.5">
+        <Clock className="size-3.5" /> If no reply, wait {days} day{days === 1 ? "" : "s"}
+      </span>
+      <span className="h-px flex-1 bg-border" />
     </div>
   )
 }

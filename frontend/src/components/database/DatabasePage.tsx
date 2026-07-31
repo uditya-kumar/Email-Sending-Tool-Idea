@@ -31,13 +31,18 @@ import { LeadDialog } from "./LeadDialog"
 import { leadsToCsv, parseLeadsCsv } from "@/lib/csv"
 import type { Lead } from "@/lib/types"
 
-interface AudienceStepProps {
+interface DatabasePageProps {
   leads: Lead[]
   onChange: (leads: Lead[]) => void
+  /** Opens the per-recipient compose flow (Content → Preview → Launch). */
+  onSend: (lead: Lead) => void
 }
 
-/** Step 1 — the recipient / leads table. */
-export function AudienceStep({ leads, onChange }: AudienceStepProps) {
+/**
+ * The app's first page — the recipient database. Every row has its own Send
+ * button, which is how per-recipient personalization starts.
+ */
+export function DatabasePage({ leads, onChange, onSend }: DatabasePageProps) {
   const [globalFilter, setGlobalFilter] = useState("")
   const [sorting, setSorting] = useState<SortingState>([])
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -52,6 +57,7 @@ export function AudienceStep({ leads, onChange }: AudienceStepProps) {
       setEditingLead(lead)
       setDialogOpen(true)
     },
+    onSend,
   })
 
   function openAdd() {
@@ -107,6 +113,15 @@ export function AudienceStep({ leads, onChange }: AudienceStepProps) {
 
   return (
     <div className="w-full px-6 py-6">
+      <div className="mb-4">
+        <h1 className="text-xl font-semibold text-foreground">Database</h1>
+        <p className="text-sm text-muted-foreground">
+          Every recipient gets their own message and send time. Hit{" "}
+          <span className="font-medium text-foreground">Send</span> on a row to
+          write, preview and launch that one email.
+        </p>
+      </div>
+
       {/* Toolbar */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium text-muted-foreground">

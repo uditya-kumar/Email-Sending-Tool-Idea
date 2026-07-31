@@ -5,7 +5,10 @@
 
 export type VerificationStatus = "verified" | "not_verified" | "invalid"
 
-/** A single recipient / lead row in the Audience table. */
+/** Where a recipient's own sequence stands. */
+export type LeadStatus = "draft" | "scheduled" | "sent"
+
+/** A single recipient / lead row in the Database table. */
 export interface Lead {
   id: string
   companyName: string
@@ -18,6 +21,8 @@ export interface Lead {
   jobTitle?: string
   website?: string
   verification: VerificationStatus
+  /** Status of this recipient's own sequence (each lead is launched separately). */
+  status: LeadStatus
 }
 
 /** The merge attributes a template can reference. */
@@ -86,4 +91,14 @@ export interface SequenceSettings {
   startDate: string
 }
 
-export type WizardTab = "audience" | "content" | "preview" | "settings"
+/**
+ * Every recipient owns their own sequence, keyed by lead id — that's what makes
+ * per-recipient personalization possible (see the compose flow).
+ */
+export type SequencesByLead = Record<string, SequenceStep[]>
+
+/** Top-level pages of the app. */
+export type AppView = "database" | "settings" | "compose"
+
+/** Steps inside the per-recipient compose flow. */
+export type ComposeStep = "content" | "preview"
