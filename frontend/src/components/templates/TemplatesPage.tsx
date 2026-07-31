@@ -1,9 +1,11 @@
 import { useState } from "react"
-import { FileText, Mail, Send } from "lucide-react"
+import { FileText, Mail } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { SequenceSidebar } from "@/components/compose/SequenceSidebar"
 import { EmailEditor } from "@/components/compose/EmailEditor"
+import { SendTestPopover } from "@/components/compose/SendTestPopover"
 import { TemplateSidebar } from "./TemplateSidebar"
+import { RenameTemplateDialog } from "./RenameTemplateDialog"
 import { newTemplate } from "@/lib/mock-data"
 import {
   appendFollowUp,
@@ -18,6 +20,8 @@ import type { EmailTemplate, SequenceStep } from "@/lib/types"
 interface TemplatesPageProps {
   templates: EmailTemplate[]
   onChange: (templates: EmailTemplate[]) => void
+  /** Connected Gmail address — the test send needs one to send from. */
+  senderEmail?: string
 }
 
 /**
@@ -25,13 +29,19 @@ interface TemplatesPageProps {
  * follow-ups). Uses the same sequence rail + editor canvas as the compose Content
  * step, so writing a template is identical to writing a recipient's emails.
  */
-export function TemplatesPage({ templates, onChange }: TemplatesPageProps) {
+export function TemplatesPage({
+  templates,
+  onChange,
+  senderEmail,
+}: TemplatesPageProps) {
   const [activeTemplateId, setActiveTemplateId] = useState(
     () => templates[0]?.id ?? ""
   )
   const [activeStepId, setActiveStepId] = useState(
     () => templates[0]?.steps.find((s) => s.kind === "email")?.id ?? ""
   )
+  /** Which template the rename dialog is open for (null = closed). */
+  const [renamingId, setRenamingId] = useState<string | null>(null)
 
   const template = templates.find((t) => t.id === activeTemplateId) ?? null
   const steps = template?.steps ?? []
@@ -54,9 +64,9 @@ export function TemplatesPage({ templates, onChange }: TemplatesPageProps) {
     )
   }
 
-  function rename(name: string) {
-    if (!template) return
-    onChange(templates.map((t) => (t.id === template.id ? { ...t, name } : t)))
+  /** Rename any template by id — the header field and the rail menu share this. */
+  function rename(id: string, name: string) {
+    onChange(templates.map((t) => (t.id === id ? { ...t, name } : t)))
   }
 
   function addTemplate() {
@@ -116,8 +126,15 @@ export function TemplatesPage({ templates, onChange }: TemplatesPageProps) {
         activeId={activeTemplateId}
         onSelect={selectTemplate}
         onAdd={addTemplate}
+        onRename={setRenamingId}
         onDuplicate={duplicateTemplate}
         onDelete={deleteTemplate}
+      />
+
+      <RenameTemplateDialog
+        template={templates.find((t) => t.id === renamingId) ?? null}
+        onOpenChange={(open) => !open && setRenamingId(null)}
+        onSave={(name) => renamingId && rename(renamingId, name)}
       />
 
       {template ? (
@@ -127,7 +144,7 @@ export function TemplatesPage({ templates, onChange }: TemplatesPageProps) {
             <FileText className="size-4 shrink-0 text-muted-foreground" />
             <Input
               value={template.name}
-              onChange={(e) => rename(e.target.value)}
+              onChange={(e) => rename(template.id, e.target.value)}
               placeholder="Template name"
               aria-label="Template name"
               className="h-8 max-w-sm border-0 px-0 text-[15px] font-semibold text-foreground shadow-none focus-visible:ring-0"
@@ -181,7 +198,7 @@ export function TemplatesPage({ templates, onChange }: TemplatesPageProps) {
                         }
                         className="h-8 flex-1 border-0 px-0 text-foreground shadow-none focus-visible:ring-0"
                       />
-                      <Send className="size-4 text-muted-foreground" />
+                      <SendTestPopover senderEmail={senderEmail} />
                     </div>
 
                     <EmailEditor

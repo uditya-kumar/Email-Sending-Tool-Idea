@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
+import { SendTimeSelect } from "@/components/common/SendTimeSelect"
 import { isValidIST } from "@/lib/time"
 import type { Lead } from "@/lib/types"
 
@@ -23,7 +24,8 @@ interface LeadDialogProps {
 
 type FormState = {
   companyName: string
-  contactFullName: string
+  firstName: string
+  lastName: string
   email: string
   personalizationLine: string
   sendTimeIST: string
@@ -33,7 +35,8 @@ type FormState = {
 
 const EMPTY: FormState = {
   companyName: "",
-  contactFullName: "",
+  firstName: "",
+  lastName: "",
   email: "",
   personalizationLine: "",
   sendTimeIST: "10:00",
@@ -44,7 +47,8 @@ const EMPTY: FormState = {
 function fromLead(lead: Lead): FormState {
   return {
     companyName: lead.companyName,
-    contactFullName: lead.contactFullName,
+    firstName: lead.firstName,
+    lastName: lead.lastName,
     email: lead.email,
     personalizationLine: lead.personalizationLine,
     sendTimeIST: lead.sendTimeIST,
@@ -83,7 +87,8 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
     onSave({
       id: lead?.id ?? `manual-${form.email}-${form.sendTimeIST}`,
       companyName: form.companyName.trim(),
-      contactFullName: form.contactFullName.trim(),
+      firstName: form.firstName.trim(),
+      lastName: form.lastName.trim(),
       email: form.email.trim(),
       personalizationLine: form.personalizationLine.trim(),
       sendTimeIST: form.sendTimeIST,
@@ -103,19 +108,21 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
         </DialogHeader>
 
         <div className="space-y-4 py-1">
+          {/* First and last are stored separately so a greeting can use the
+              first name alone — see the {{first_name}} merge tag. */}
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Company name">
+            <Field label="First name">
               <Input
-                value={form.companyName}
-                onChange={(e) => set("companyName", e.target.value)}
-                placeholder="Acme Inc."
+                value={form.firstName}
+                onChange={(e) => set("firstName", e.target.value)}
+                placeholder="Jane"
               />
             </Field>
-            <Field label="Contact person full name">
+            <Field label="Last name">
               <Input
-                value={form.contactFullName}
-                onChange={(e) => set("contactFullName", e.target.value)}
-                placeholder="Jane Doe"
+                value={form.lastName}
+                onChange={(e) => set("lastName", e.target.value)}
+                placeholder="Doe"
               />
             </Field>
           </div>
@@ -129,6 +136,23 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
             />
           </Field>
 
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Company name">
+              <Input
+                value={form.companyName}
+                onChange={(e) => set("companyName", e.target.value)}
+                placeholder="Acme Inc."
+              />
+            </Field>
+            <Field label="Job title">
+              <Input
+                value={form.jobTitle}
+                onChange={(e) => set("jobTitle", e.target.value)}
+                placeholder="CEO"
+              />
+            </Field>
+          </div>
+
           <Field label="Personalization line">
             <Textarea
               value={form.personalizationLine}
@@ -140,29 +164,21 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
           </Field>
 
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Job title">
-              <Input
-                value={form.jobTitle}
-                onChange={(e) => set("jobTitle", e.target.value)}
-                placeholder="CEO"
+            <Field label="Send time (IST)" required>
+              <SendTimeSelect
+                value={form.sendTimeIST}
+                onChange={(hhmm) => set("sendTimeIST", hhmm)}
+                className="w-full"
               />
             </Field>
-            <Field label="Send time (IST)" required>
+            <Field label="Website">
               <Input
-                type="time"
-                value={form.sendTimeIST}
-                onChange={(e) => set("sendTimeIST", e.target.value)}
+                value={form.website}
+                onChange={(e) => set("website", e.target.value)}
+                placeholder="https://acme.com"
               />
             </Field>
           </div>
-
-          <Field label="Website">
-            <Input
-              value={form.website}
-              onChange={(e) => set("website", e.target.value)}
-              placeholder="https://acme.com"
-            />
-          </Field>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>

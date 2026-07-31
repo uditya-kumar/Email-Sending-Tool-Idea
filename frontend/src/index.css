@@ -200,8 +200,19 @@
  * preflight) hands the border to the body rows, which then scroll away from the
  * stuck header.
  */
+/*
+ * The header's bottom edge, plus the vertical rule to the right of each column
+ * (matching the border-r on the body cells). Both are inset shadows for the same
+ * reason: a sticky element's collapsed borders don't paint. The last header cell
+ * is the pinned Actions column — its left edge is drawn by the pin shadow below.
+ */
 .pinned-head > th {
   box-shadow: inset 0 -1px 0 var(--border);
+}
+.pinned-head > th:not(:last-child) {
+  box-shadow:
+    inset 0 -1px 0 var(--border),
+    inset -1px 0 0 var(--border);
 }
 .pinned-cell {
   box-shadow: -8px 0 8px -6px rgb(0 0 0 / 0.12);

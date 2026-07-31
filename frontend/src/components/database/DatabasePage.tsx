@@ -36,13 +36,20 @@ interface DatabasePageProps {
   onChange: (leads: Lead[]) => void
   /** Opens the per-recipient compose flow (Content → Preview → Launch). */
   onSend: (lead: Lead) => void
+  /** Un-schedules a launched recipient, returning them to draft. */
+  onCancelSchedule: (lead: Lead) => void
 }
 
 /**
  * The app's first page — the recipient database. Every row has its own Send
  * button, which is how per-recipient personalization starts.
  */
-export function DatabasePage({ leads, onChange, onSend }: DatabasePageProps) {
+export function DatabasePage({
+  leads,
+  onChange,
+  onSend,
+  onCancelSchedule,
+}: DatabasePageProps) {
   const [globalFilter, setGlobalFilter] = useState("")
   const [sorting, setSorting] = useState<SortingState>([])
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -58,6 +65,7 @@ export function DatabasePage({ leads, onChange, onSend }: DatabasePageProps) {
       setDialogOpen(true)
     },
     onSend,
+    onCancelSchedule,
   })
 
   function openAdd() {
@@ -173,7 +181,19 @@ export function DatabasePage({ leads, onChange, onSend }: DatabasePageProps) {
 
       {/* Table (scrolls both ways; header row and Actions column stay pinned) */}
       <div className="min-h-0 flex-1 overflow-hidden rounded-xl border bg-card">
-        <Table containerClassName="h-full overflow-y-auto">
+        <Table
+          containerClassName="h-full overflow-y-auto"
+          /*
+           * Vertical rules between columns — this table is wide enough to scroll
+           * sideways, so the lines are what keep a value tied to its header.
+           * Skipped on the last cell: that's the pinned Actions column, whose
+           * left edge is already drawn by its own shadow.
+           *
+           * Body cells only; the header's rules are inset shadows in index.css,
+           * since a sticky element's collapsed borders don't paint.
+           */
+          className="[&_td:not(:last-child)]:border-r"
+        >
           <TableHeader className="sticky top-0 z-20">
             {table.getHeaderGroups().map((hg) => (
               <TableRow key={hg.id} className="pinned-head">

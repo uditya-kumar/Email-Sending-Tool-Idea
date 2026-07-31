@@ -4,6 +4,7 @@ import type {
   SenderAccount,
   SequenceSettings,
   SequenceStep,
+  UserProfile,
 } from "./types"
 
 /** Sample leads (mirrors the inspiration screenshots). */
@@ -11,7 +12,8 @@ export const MOCK_LEADS: Lead[] = [
   {
     id: "l1",
     companyName: "thumpN",
-    contactFullName: "Varun Khare",
+    firstName: "Varun",
+    lastName: "Khare",
     email: "varun@thumpn.com",
     personalizationLine: "your work on real-time agent orchestration",
     sendTimeIST: "10:00",
@@ -23,7 +25,8 @@ export const MOCK_LEADS: Lead[] = [
   {
     id: "l2",
     companyName: "Pie",
-    contactFullName: "Akhil Mantripragada",
+    firstName: "Akhil",
+    lastName: "Mantripragada",
     email: "akhil@getpie.com",
     personalizationLine: "Pie's approach to underwriting automation",
     sendTimeIST: "11:30",
@@ -35,7 +38,8 @@ export const MOCK_LEADS: Lead[] = [
   {
     id: "l3",
     companyName: "Kapture CX",
-    contactFullName: "Sanchit Sood",
+    firstName: "Sanchit",
+    lastName: "Sood",
     email: "sanchit@kapturecx.com",
     personalizationLine: "how Kapture is layering AI into CX workflows",
     sendTimeIST: "14:00",
@@ -47,7 +51,8 @@ export const MOCK_LEADS: Lead[] = [
   {
     id: "l4",
     companyName: "Lyzr",
-    contactFullName: "Siva Surendira",
+    firstName: "Siva",
+    lastName: "Surendira",
     email: "siva@lyzr.ai",
     personalizationLine: "Lyzr's agent framework",
     sendTimeIST: "15:30",
@@ -59,7 +64,8 @@ export const MOCK_LEADS: Lead[] = [
   {
     id: "l5",
     companyName: "Prime Intellect",
-    contactFullName: "Jannik Straube",
+    firstName: "Jannik",
+    lastName: "Straube",
     email: "jannik@primeintellect.ai",
     personalizationLine: "distributed training at Prime Intellect",
     sendTimeIST: "18:00",
@@ -71,7 +77,8 @@ export const MOCK_LEADS: Lead[] = [
   {
     id: "l6",
     companyName: "ESGAgent.ai",
-    contactFullName: "Shan Kadavil",
+    firstName: "Shan",
+    lastName: "Kadavil",
     email: "shan@esgagent.ai",
     personalizationLine: "ESGAgent's compliance automation",
     sendTimeIST: "09:30",
@@ -83,7 +90,8 @@ export const MOCK_LEADS: Lead[] = [
   {
     id: "l7",
     companyName: "Floqer",
-    contactFullName: "Shivam Mahajan",
+    firstName: "Shivam",
+    lastName: "Mahajan",
     email: "shivam@floqer.com",
     personalizationLine: "Floqer's workflow builder",
     sendTimeIST: "12:15",
@@ -95,7 +103,8 @@ export const MOCK_LEADS: Lead[] = [
   {
     id: "l8",
     companyName: "Monorale AI",
-    contactFullName: "Alex Wilkinson",
+    firstName: "Alex",
+    lastName: "Wilkinson",
     email: "aw@monorale.com",
     personalizationLine: "Monorale's voice-agent stack",
     sendTimeIST: "16:45",
@@ -184,15 +193,17 @@ export function stepsFromTemplate(
   }))
 }
 
+/** The logged-in owner. Independent of whatever Gmail is connected for sending. */
+export const MOCK_PROFILE: UserProfile = {
+  name: "Uditya Kumar",
+  email: "uditya204@gmail.com",
+}
+
 export const MOCK_SENDERS: SenderAccount[] = [
   {
     id: "acc1",
     email: "uditya204@gmail.com",
     name: "Uditya Kumar",
-    status: "needs_protection",
-    provider: "Gmail",
-    allocatedRecipients: 17,
-    sentToday: 0,
     dailyLimit: 15,
   },
 ]
@@ -200,11 +211,6 @@ export const MOCK_SENDERS: SenderAccount[] = [
 export const DEFAULT_SETTINGS: SequenceSettings = {
   trackOpens: false,
   trackClicks: false,
-  bccEnabled: false,
-  bccAddress: "",
-  sendingDays: [0, 1, 2, 3, 4], // Mon–Fri
-  sendWindowStart: "09:00",
-  sendWindowEnd: "17:00",
-  startOnSpecificDay: false,
-  startDate: "",
+  outreachDays: [0, 1, 2, 3], // Mon–Thu
+  followUpDays: [0, 1, 2, 3, 4], // Mon–Fri
 }

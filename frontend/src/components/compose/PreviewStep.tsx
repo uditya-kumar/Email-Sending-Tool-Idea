@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
+import { fullName } from "@/lib/leads"
 import { renderTags } from "@/lib/merge-tags"
 import { formatIST } from "@/lib/time"
 import { LeadStatusBadge } from "@/components/common/StatusBadge"
@@ -91,12 +92,12 @@ export function PreviewStep({ lead, steps, onLaunch }: PreviewStepProps) {
           <div className="flex items-center gap-3">
             <Avatar className="size-12 bg-accent/15">
               <AvatarFallback className="bg-accent/15 font-medium text-accent">
-                {initials(lead.contactFullName || lead.email)}
+                {initials(fullName(lead) || lead.email)}
               </AvatarFallback>
             </Avatar>
             <div className="min-w-0">
               <h3 className="truncate font-semibold text-foreground">
-                {lead.contactFullName || "—"}
+                {fullName(lead) || "—"}
               </h3>
               <p className="truncate text-sm text-muted-foreground">{lead.email}</p>
             </div>
@@ -109,7 +110,8 @@ export function PreviewStep({ lead, steps, onLaunch }: PreviewStepProps) {
           <div className="mt-5 space-y-5 text-sm">
             <div className="space-y-1">
               <p className="font-semibold text-foreground">Profile</p>
-              <ProfileRow label="Full name" value={lead.contactFullName} />
+              <ProfileRow label="First name" value={lead.firstName} />
+              <ProfileRow label="Last name" value={lead.lastName} />
               <ProfileRow label="Job title" value={lead.jobTitle} />
             </div>
 

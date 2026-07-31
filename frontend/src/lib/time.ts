@@ -32,23 +32,35 @@ export function readingStats(text: string): { words: number; seconds: number } {
   return { words, seconds }
 }
 
-/** Hourly options ("HH:mm" value + "9:00 am" label) for the sending window. */
-export const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => {
-  const value = `${String(h).padStart(2, "0")}:00`
-  const label = DateTime.fromObject({ hour: h }).toFormat("h:mm a").toLowerCase()
-  return { value, label }
-})
-
-/** Current time in IST, e.g. "12:25 pm" (recomputed on each call). */
-export function currentISTLabel(): string {
-  return DateTime.now().setZone(IST_ZONE).toFormat("h:mm a").toLowerCase()
+/** Format an IST "HH:mm" without the zone suffix, e.g. "3:30 PM". */
+function clockLabel(hhmm: string): string {
+  const dt = DateTime.fromFormat(hhmm, "HH:mm", { zone: IST_ZONE })
+  return dt.isValid ? dt.toFormat("h:mm a") : hhmm
 }
 
-/** The last 7 calendar days (IST), oldest first, for the usage chart. */
-export function lastSevenDays(): { iso: string; label: string }[] {
-  const today = DateTime.now().setZone(IST_ZONE).startOf("day")
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = today.minus({ days: 6 - i })
-    return { iso: d.toISODate() ?? String(i), label: d.toFormat("LLL d") }
-  })
+/**
+ * Quarter-hourly "HH:mm" options for the per-recipient send-time dropdown.
+ * 15-minute steps because the seeded leads use times like 12:15 and 16:45.
+ * Labels omit "IST" — the field is already labelled "Send time (IST)".
+ */
+export const SEND_TIME_OPTIONS = Array.from({ length: 96 }, (_, i) => {
+  const hhmm = `${String(Math.floor(i / 4)).padStart(2, "0")}:${String(
+    (i % 4) * 15
+  ).padStart(2, "0")}`
+  return { value: hhmm, label: clockLabel(hhmm) }
+})
+
+/**
+ * The dropdown options for one recipient. A lead whose time is off the 15-minute
+ * grid (hand-typed, or imported from CSV) keeps its exact value as an extra
+ * option, so opening the dropdown can never silently reschedule them.
+ */
+export function sendTimeOptions(
+  current: string
+): { value: string; label: string }[] {
+  if (SEND_TIME_OPTIONS.some((o) => o.value === current)) return SEND_TIME_OPTIONS
+  const extra = { value: current, label: clockLabel(current) }
+  return [...SEND_TIME_OPTIONS, extra].sort((a, b) =>
+    a.value.localeCompare(b.value)
+  )
 }

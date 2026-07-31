@@ -1,6 +1,15 @@
-import { Database, FileText, Mail, Settings } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Database, FileText, LogOut, Mail, Settings, UserRound } from "lucide-react"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import type { UserProfile } from "@/lib/types"
 
 /** Pages reachable from the header nav. */
 export type NavView = "database" | "templates"
@@ -14,11 +23,31 @@ interface AppHeaderProps {
   /** Which top-level page is showing ("compose" keeps Database highlighted). */
   active: "database" | "templates" | "settings" | "compose"
   onNavigate: (view: NavView | "settings") => void
-  recipientCount: number
+  /** The logged-in owner shown in the profile menu — not the sending account. */
+  profile: UserProfile
+  onOpenProfile: () => void
+  onLogout: () => void
 }
 
-/** Dashboard top bar: product mark, page nav, and the settings gear. */
-export function AppHeader({ active, onNavigate, recipientCount }: AppHeaderProps) {
+/** First letters of the first and last word, e.g. "Uditya Kumar" → "UK". */
+function initials(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean)
+  if (!words.length) return ""
+  const first = words[0]![0]!
+  const last = words.length > 1 ? words[words.length - 1]![0]! : ""
+  return (first + last).toUpperCase()
+}
+
+/** Dashboard top bar: product mark, page nav, and the profile menu. */
+export function AppHeader({
+  active,
+  onNavigate,
+  profile,
+  onOpenProfile,
+  onLogout,
+}: AppHeaderProps) {
+  const mark = initials(profile.name)
+
   return (
     <header className="flex items-center justify-between gap-4 border-b bg-background px-4 py-2.5">
       <div className="flex items-center gap-3">
@@ -51,19 +80,41 @@ export function AppHeader({ active, onNavigate, recipientCount }: AppHeaderProps
         </nav>
       </div>
 
-      <div className="flex items-center gap-3">
-        <span className="hidden text-sm text-muted-foreground sm:inline">
-          {recipientCount} recipients
-        </span>
-        <Button
-          variant={active === "settings" ? "secondary" : "ghost"}
-          size="icon-sm"
-          aria-label="Settings"
-          onClick={() => onNavigate("settings")}
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          aria-label="Account menu"
+          className={cn(
+            "rounded-full outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+            // Keep the avatar lit while Settings — reached from this menu — is open.
+            active === "settings" && "ring-2 ring-accent/40"
+          )}
         >
-          <Settings />
-        </Button>
-      </div>
+          <Avatar>
+            <AvatarFallback>
+              {mark || <UserRound className="size-4" />}
+            </AvatarFallback>
+          </Avatar>
+        </DropdownMenuTrigger>
+
+        {/* Wider than the trigger, which the default width would clamp it to. */}
+        <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuLabel className="font-normal">
+            <p className="text-sm font-medium text-foreground">{profile.name}</p>
+            <p className="truncate">{profile.email}</p>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={onOpenProfile}>
+            <UserRound /> Profile
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onNavigate("settings")}>
+            <Settings /> Settings
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" onSelect={onLogout}>
+            <LogOut /> Logout
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </header>
   )
 }

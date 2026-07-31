@@ -6,10 +6,14 @@ import { DatabasePage } from "@/components/database/DatabasePage"
 import { ComposeFlow } from "@/components/compose/ComposeFlow"
 import { TemplatesPage } from "@/components/templates/TemplatesPage"
 import { SettingsPage } from "@/components/settings/SettingsPage"
-import { SenderPanel } from "@/components/settings/SenderPanel"
+import { SenderLimitDialog } from "@/components/settings/SenderLimitDialog"
+import { ProfileDialog } from "@/components/settings/ProfileDialog"
+import { fullName } from "@/lib/leads"
+import { supabase } from "@/lib/supabase"
 import {
   DEFAULT_SETTINGS,
   MOCK_LEADS,
+  MOCK_PROFILE,
   MOCK_SENDERS,
   MOCK_TEMPLATES,
   newSequenceForLead,
@@ -22,6 +26,7 @@ import type {
   SenderAccount,
   SequenceSettings,
   SequencesByLead,
+  UserProfile,
 } from "@/lib/types"
 
 /** Seed one sequence per lead so every recipient starts with their own copy. */
@@ -49,9 +54,12 @@ export default function App() {
     seedSequences(MOCK_LEADS)
   )
   const [templates, setTemplates] = useState<EmailTemplate[]>(MOCK_TEMPLATES)
+  /** Who's logged in. Survives disconnecting the sending account. */
+  const [profile, setProfile] = useState<UserProfile>(MOCK_PROFILE)
   const [senders, setSenders] = useState<SenderAccount[]>(MOCK_SENDERS)
   const [settings, setSettings] = useState<SequenceSettings>(DEFAULT_SETTINGS)
   const [editingSenderId, setEditingSenderId] = useState<string | null>(null)
+  const [profileOpen, setProfileOpen] = useState(false)
 
   const composingLead = leads.find((l) => l.id === composingId) ?? null
 
@@ -74,10 +82,19 @@ export default function App() {
     setLeads((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)))
   }
 
+  /** Pull a scheduled recipient back to draft so they can be edited again. */
+  function cancelSchedule(lead: Lead) {
+    patchLead(lead.id, { status: "draft" })
+    toast.success(`Schedule cancelled for ${fullName(lead) || lead.email}`, {
+      description: "They're back to draft — nothing will send until you launch again.",
+    })
+  }
+
   function launchLead(lead: Lead) {
     patchLead(lead.id, { status: "scheduled" })
-    toast.success(`Scheduled for ${lead.contactFullName || lead.email}`, {
-      description: `Sends at ${formatIST(lead.sendTimeIST)} IST from ${
+    toast.success(`Scheduled for ${fullName(lead) || lead.email}`, {
+      // formatIST already appends "IST" — don't add a second one.
+      description: `Sends at ${formatIST(lead.sendTimeIST)} from ${
         senders[0]?.email ?? "your Gmail account"
       }.`,
     })
@@ -85,7 +102,31 @@ export default function App() {
   }
 
   const editingSender = senders.find((s) => s.id === editingSenderId) ?? null
-  const scheduledCount = leads.filter((l) => l.status !== "draft").length
+
+  /** Disconnect a sending account — nothing can send without one, so warn. */
+  function removeSender(sender: SenderAccount) {
+    setSenders((prev) => prev.filter((s) => s.id !== sender.id))
+    toast.success(`Disconnected ${sender.email} for sending`, {
+      // Only the send path is affected — you're still signed in as yourself.
+      description: "Connect an account again before launching any recipients.",
+    })
+  }
+
+  /**
+   * Signs out via Supabase Auth when it's configured; the UI is still built on
+   * mock data, so without env vars there's no session to end — say so instead of
+   * pretending it worked.
+   */
+  async function logout() {
+    if (!supabase) {
+      toast.info("Sign-in isn't connected yet", {
+        description: "Supabase Auth still needs wiring up — nothing to log out of.",
+      })
+      return
+    }
+    const { error } = await supabase.auth.signOut()
+    if (error) toast.error("Couldn't log out", { description: error.message })
+  }
 
   return (
     <div className="flex h-svh flex-col bg-background">
@@ -103,14 +144,21 @@ export default function App() {
             setComposingId(null)
             setView(next)
           }}
-          recipientCount={leads.length}
+          profile={profile}
+          onOpenProfile={() => setProfileOpen(true)}
+          onLogout={logout}
         />
       )}
 
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* Database manages its own scrolling (rows scroll, chrome stays put). */}
         {view === "database" && (
-          <DatabasePage leads={leads} onChange={setLeads} onSend={openCompose} />
+          <DatabasePage
+            leads={leads}
+            onChange={setLeads}
+            onSend={openCompose}
+            onCancelSchedule={cancelSchedule}
+          />
         )}
 
         {view === "compose" && composingLead && (
@@ -125,11 +173,16 @@ export default function App() {
             onLeadChange={(patch) => patchLead(composingLead.id, patch)}
             onLaunch={() => launchLead(composingLead)}
             onBack={backToDatabase}
+            senderEmail={senders[0]?.email}
           />
         )}
 
         {view === "templates" && (
-          <TemplatesPage templates={templates} onChange={setTemplates} />
+          <TemplatesPage
+            templates={templates}
+            onChange={setTemplates}
+            senderEmail={senders[0]?.email}
+          />
         )}
 
         {view === "settings" && (
@@ -141,6 +194,7 @@ export default function App() {
                 setSettings((prev) => ({ ...prev, ...patch }))
               }
               onEditSender={(s) => setEditingSenderId(s.id)}
+              onRemoveSender={removeSender}
               onSaveSchedule={() => toast.success("Settings saved")}
               onBack={() => setView(settingsOrigin)}
               backLabel={settingsOrigin === "templates" ? "Templates" : "Database"}
@@ -149,16 +203,26 @@ export default function App() {
         )}
       </main>
 
-      <SenderPanel
+      <SenderLimitDialog
         sender={editingSender}
         onOpenChange={(open) => !open && setEditingSenderId(null)}
-        onUpdate={(patch) =>
+        onSave={(dailyLimit) => {
           setSenders((prev) =>
-            prev.map((s) => (s.id === editingSenderId ? { ...s, ...patch } : s))
+            prev.map((s) => (s.id === editingSenderId ? { ...s, dailyLimit } : s))
           )
-        }
-        recipientsAllocated={leads.length}
-        emailsScheduled={scheduledCount}
+          toast.success(`Send limit set to ${dailyLimit}/day`)
+        }}
+      />
+
+      <ProfileDialog
+        open={profileOpen}
+        onOpenChange={setProfileOpen}
+        profile={profile}
+        sender={senders[0] ?? null}
+        onSave={(name) => {
+          setProfile((prev) => ({ ...prev, name }))
+          toast.success("Profile updated")
+        }}
       />
 
       <Toaster position="bottom-right" />

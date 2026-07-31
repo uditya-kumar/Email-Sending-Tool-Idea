@@ -1,5 +1,6 @@
 import { ArrowLeft, ArrowRight, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { fullName } from "@/lib/leads"
 import { cn } from "@/lib/utils"
 import type { ComposeStep, Lead } from "@/lib/types"
 
@@ -47,7 +48,7 @@ export function ComposeHeader({
             </button>
             <span className="text-muted-foreground">/</span>
             <span className="truncate font-semibold text-foreground">
-              {lead.contactFullName || lead.email}
+              {fullName(lead) || lead.email}
             </span>
             <span className="hidden truncate text-sm text-muted-foreground sm:inline">
               · {lead.email}

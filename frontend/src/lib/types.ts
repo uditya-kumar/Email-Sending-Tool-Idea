@@ -12,7 +12,12 @@ export type LeadStatus = "draft" | "scheduled" | "sent"
 export interface Lead {
   id: string
   companyName: string
-  contactFullName: string
+  /**
+   * Stored as two fields rather than one full name: a cold email almost always
+   * greets on the first name alone, so it has to be addressable on its own.
+   */
+  firstName: string
+  lastName: string
   email: string
   /** One-line personalization used via the {{personalization}} tag. */
   personalizationLine: string
@@ -25,15 +30,19 @@ export interface Lead {
   status: LeadStatus
 }
 
-/** The merge attributes a template can reference. */
+/**
+ * The merge attributes a template can reference — one per data column of the
+ * Database table (see MERGE_ATTRIBUTES).
+ */
 export type MergeAttributeKey =
+  | "email"
   | "first_name"
   | "last_name"
-  | "full_name"
   | "company"
-  | "email"
-  | "job_title"
   | "personalization"
+  | "job_title"
+  | "website"
+  | "send_time"
 
 export interface MergeAttribute {
   key: MergeAttributeKey
@@ -67,19 +76,26 @@ export interface EmailTemplate {
   steps: SequenceStep[]
 }
 
-export type SenderStatus = "active" | "needs_protection" | "disconnected"
+/**
+ * The owner's own account — who is logged in. Deliberately separate from
+ * SenderAccount: disconnecting the Gmail you send *through* shouldn't erase who
+ * you are, so the profile survives an empty sender list.
+ */
+export interface UserProfile {
+  name: string
+  email: string
+}
 
-/** A connected Gmail sender account. */
+/**
+ * A connected Gmail sender account. Deliberately minimal: the address and the
+ * daily send cap are the only things this tool needs to know about it.
+ */
 export interface SenderAccount {
   id: string
   email: string
   name: string
-  status: SenderStatus
-  provider: string
-  allocatedRecipients: number
-  sentToday: number
+  /** Daily send cap — the deliverability guard (see CLAUDE.md). */
   dailyLimit: number
-  signatureHtml?: string
 }
 
 /** Day of week, 0 = Monday … 6 = Sunday. */
@@ -89,16 +105,17 @@ export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6
 export interface SequenceSettings {
   trackOpens: boolean
   trackClicks: boolean
-  bccEnabled: boolean
-  bccAddress: string
-  /** Days of the week the sequence is allowed to send. */
-  sendingDays: Weekday[]
-  /** Sending window in IST ("HH:mm"). */
-  sendWindowStart: string
-  sendWindowEnd: string
-  /** Optionally schedule the launch for a future date (YYYY-MM-DD). */
-  startOnSpecificDay: boolean
-  startDate: string
+  /**
+   * Days of the week a first-touch email to a new lead may go out. Kept separate
+   * from follow-ups because cold opens land best early in the week, while a
+   * follow-up on an existing thread is fine any working day.
+   *
+   * There's no hour window — each lead's own IST send time decides when their
+   * email goes out; these only decide which days are eligible.
+   */
+  outreachDays: Weekday[]
+  /** Days of the week a follow-up in an existing thread may go out. */
+  followUpDays: Weekday[]
 }
 
 /**

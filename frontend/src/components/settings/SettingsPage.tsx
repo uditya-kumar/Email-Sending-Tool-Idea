@@ -1,4 +1,4 @@
-import { ArrowLeft, Pencil, Plus } from "lucide-react"
+import { ArrowLeft, Pencil, Plus, Trash2 } from "lucide-react"
 import {
   Table,
   TableBody,
@@ -11,18 +11,7 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import { HOUR_OPTIONS, currentISTLabel } from "@/lib/time"
-import { SenderStatusBadge } from "@/components/common/StatusBadge"
 import type { SenderAccount, SequenceSettings, Weekday } from "@/lib/types"
 
 const WEEKDAYS: { value: Weekday; label: string }[] = [
@@ -39,7 +28,10 @@ interface SettingsPageProps {
   senders: SenderAccount[]
   settings: SequenceSettings
   onSettingsChange: (patch: Partial<SequenceSettings>) => void
+  /** Opens the daily-send-limit dialog for this account. */
   onEditSender: (sender: SenderAccount) => void
+  /** Disconnects the account from sending. Doesn't touch the user's profile. */
+  onRemoveSender: (sender: SenderAccount) => void
   onSaveSchedule: () => void
   /** Returns to whichever page Settings was opened from. */
   onBack: () => void
@@ -77,6 +69,49 @@ function ToggleRow({
   )
 }
 
+/** One labelled Mon–Sun checkbox row. Rendered once per send type. */
+function DayPicker({
+  label,
+  hint,
+  selected,
+  onToggle,
+}: {
+  label: string
+  hint: string
+  selected: Weekday[]
+  onToggle: (day: Weekday) => void
+}) {
+  return (
+    <div className="space-y-2">
+      <div>
+        <p className="text-sm font-medium text-foreground">{label}</p>
+        <p className="text-sm text-muted-foreground">{hint}</p>
+      </div>
+      {/* Single row, Mon–Sun — scrolls rather than wraps on narrow viewports. */}
+      <div className="-mx-1 flex flex-nowrap gap-2 overflow-x-auto px-1 py-1">
+        {WEEKDAYS.map((day) => {
+          const active = selected.includes(day.value)
+          return (
+            <label
+              key={day.value}
+              className={cn(
+                "flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm whitespace-nowrap transition-colors",
+                !active && "hover:border-muted-foreground/30"
+              )}
+            >
+              <Checkbox
+                checked={active}
+                onCheckedChange={() => onToggle(day.value)}
+              />
+              {day.label}
+            </label>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function SectionHeading({
   title,
   description,
@@ -99,7 +134,7 @@ function SectionHeading({
 }
 
 /**
- * Standalone Settings page (opened from the header gear): sender accounts, BCC,
+ * Standalone Settings page (opened from the header gear): sender accounts,
  * tracking, and the global sending window that every recipient's send respects.
  */
 export function SettingsPage({
@@ -107,20 +142,22 @@ export function SettingsPage({
   settings,
   onSettingsChange,
   onEditSender,
+  onRemoveSender,
   onSaveSchedule,
   onBack,
   backLabel,
 }: SettingsPageProps) {
-  function toggleDay(day: Weekday) {
-    const has = settings.sendingDays.includes(day)
-    const next = has
-      ? settings.sendingDays.filter((d) => d !== day)
-      : [...settings.sendingDays, day].sort((a, b) => a - b)
-    onSettingsChange({ sendingDays: next })
+  /** Add/remove a day in whichever of the two day lists was clicked. */
+  function toggleDay(key: "outreachDays" | "followUpDays", day: Weekday) {
+    const current = settings[key]
+    const next = current.includes(day)
+      ? current.filter((d) => d !== day)
+      : [...current, day].sort((a, b) => a - b)
+    onSettingsChange({ [key]: next })
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-8">
+    <div className="mx-auto w-full max-w-5xl space-y-10 px-6 py-8 sm:px-12 lg:px-20">
       <div>
         {/* Back to wherever Settings was opened from. */}
         <div className="mb-3 flex items-center gap-1.5">
@@ -152,86 +189,67 @@ export function SettingsPage({
       {/* Sender accounts */}
       <section>
         <SectionHeading
-          title="Sender accounts"
-          description="Select the email account(s) to send the sequence. If multiple accounts are chosen, emails are distributed among them."
+          title="Sender account"
+          description="The Gmail account every email is sent from, and how many it may send per day."
         />
         <div className="overflow-hidden rounded-xl border bg-card">
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/60 hover:bg-muted/60">
-                <TableHead className="w-10">
-                  <Checkbox defaultChecked />
-                </TableHead>
                 <TableHead>Email account</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Allocated</TableHead>
-                <TableHead>Sent/limit</TableHead>
-                <TableHead className="w-10" />
+                <TableHead>Send limit</TableHead>
+                <TableHead className="w-24 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {senders.map((s) => (
-                <TableRow key={s.id} className="bg-accent/5">
-                  <TableCell>
-                    <Checkbox defaultChecked />
-                  </TableCell>
-                  <TableCell>
-                    <p className="font-medium text-foreground">{s.email}</p>
-                    <p className="text-xs text-muted-foreground">{s.name}</p>
-                  </TableCell>
-                  <TableCell>
-                    <SenderStatusBadge status={s.status} />
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {s.allocatedRecipients} recipients
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {s.sentToday}/{s.dailyLimit}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="outline"
-                      size="icon-sm"
-                      aria-label="Edit sender"
-                      onClick={() => onEditSender(s)}
-                    >
-                      <Pencil />
-                    </Button>
+              {senders.length ? (
+                senders.map((s) => (
+                  <TableRow key={s.id}>
+                    <TableCell>
+                      <p className="font-medium text-foreground">{s.email}</p>
+                      <p className="text-xs text-muted-foreground">{s.name}</p>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {s.dailyLimit}/day
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="outline"
+                          size="icon-sm"
+                          aria-label="Edit send limit"
+                          onClick={() => onEditSender(s)}
+                        >
+                          <Pencil />
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="icon-sm"
+                          aria-label="Disconnect account"
+                          onClick={() => onRemoveSender(s)}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell
+                    colSpan={3}
+                    className="h-20 text-center text-muted-foreground"
+                  >
+                    No account connected — nothing can send until you add one.
                   </TableCell>
                 </TableRow>
-              ))}
+              )}
             </TableBody>
           </Table>
         </div>
         <Button variant="outline" size="sm" className="mt-3 gap-1.5">
           <Plus className="size-4" /> Add account
         </Button>
-
-        {/* BCC */}
-        <div className="mt-4 rounded-xl border bg-card">
-          <div className="flex items-center justify-between gap-4 px-4 py-3.5">
-            <div>
-              <p className="text-sm font-medium text-foreground">Add BCC</p>
-              <p className="text-sm text-muted-foreground">
-                Send a hidden copy of every email to another address.
-              </p>
-            </div>
-            <Switch
-              checked={settings.bccEnabled}
-              onCheckedChange={(v) => onSettingsChange({ bccEnabled: v })}
-            />
-          </div>
-          {settings.bccEnabled && (
-            <div className="border-t px-4 py-3">
-              <Input
-                type="email"
-                placeholder="bcc@example.com"
-                value={settings.bccAddress}
-                onChange={(e) => onSettingsChange({ bccAddress: e.target.value })}
-              />
-            </div>
-          )}
-        </div>
       </section>
 
       {/* Tracking */}
@@ -259,108 +277,26 @@ export function SettingsPage({
         </div>
       </section>
 
-      {/* Sending window */}
+      {/* Sending days — first touches and follow-ups get their own schedules. */}
       <section>
         <SectionHeading
-          title="Sending window"
-          description="Outer bounds for all sends. A recipient's own IST send time still decides when their email goes out — it just has to fall inside this window."
+          title="Sending days"
+          description="Days sends are allowed. A recipient whose IST send time falls on an excluded day waits for the next allowed one."
         />
 
-        {/* Sending days */}
-        <div className="space-y-2">
-          <Label>Sending days</Label>
-          <div className="flex flex-wrap gap-2">
-            {WEEKDAYS.map((day) => {
-              const active = settings.sendingDays.includes(day.value)
-              return (
-                <label
-                  key={day.value}
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
-                    active
-                      ? "border-accent/50 bg-accent/5"
-                      : "hover:border-muted-foreground/30"
-                  )}
-                >
-                  <Checkbox
-                    checked={active}
-                    onCheckedChange={() => toggleDay(day.value)}
-                  />
-                  {day.label}
-                </label>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Sending hours */}
-        <div className="mt-5 space-y-2">
-          <Label>Sending hours</Label>
-          <div className="flex flex-wrap items-center gap-3">
-            <Select
-              value={settings.sendWindowStart}
-              onValueChange={(v) => onSettingsChange({ sendWindowStart: v })}
-            >
-              <SelectTrigger className="w-28">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {HOUR_OPTIONS.map((h) => (
-                  <SelectItem key={h.value} value={h.value}>
-                    {h.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <span className="text-muted-foreground">to</span>
-            <Select
-              value={settings.sendWindowEnd}
-              onValueChange={(v) => onSettingsChange({ sendWindowEnd: v })}
-            >
-              <SelectTrigger className="w-28">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {HOUR_OPTIONS.map((h) => (
-                  <SelectItem key={h.value} value={h.value}>
-                    {h.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <span className="text-sm text-muted-foreground">
-              In <span className="font-medium text-accent">(GMT+05:30) Chennai</span>{" "}
-              · Currently {currentISTLabel()}
-            </span>
-          </div>
-        </div>
-
-        {/* Start on a specific day */}
-        <div className="mt-5 rounded-xl border bg-card">
-          <div className="flex items-center justify-between gap-4 px-4 py-3.5">
-            <div>
-              <p className="text-sm font-medium text-foreground">
-                Start sends on a specific day
-              </p>
-              <p className="text-sm text-muted-foreground">
-                Hold launched recipients until this date instead of sending today.
-              </p>
-            </div>
-            <Switch
-              checked={settings.startOnSpecificDay}
-              onCheckedChange={(v) => onSettingsChange({ startOnSpecificDay: v })}
-            />
-          </div>
-          {settings.startOnSpecificDay && (
-            <div className="border-t px-4 py-3">
-              <Input
-                type="date"
-                value={settings.startDate}
-                onChange={(e) => onSettingsChange({ startDate: e.target.value })}
-                className="w-48"
-              />
-            </div>
-          )}
+        <div className="space-y-5">
+          <DayPicker
+            label="Days for new lead outreach"
+            hint="When a first-touch email to a brand-new lead may go out."
+            selected={settings.outreachDays}
+            onToggle={(d) => toggleDay("outreachDays", d)}
+          />
+          <DayPicker
+            label="Days for follow-up emails to go out"
+            hint="When a follow-up in an existing thread may go out, if there's been no reply."
+            selected={settings.followUpDays}
+            onToggle={(d) => toggleDay("followUpDays", d)}
+          />
         </div>
 
         <Button className="mt-5" onClick={onSaveSchedule}>

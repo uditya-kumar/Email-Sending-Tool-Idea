@@ -31,14 +31,17 @@ export function InsertAttributeDialog({
   onOpenChange,
   onInsert,
 }: InsertAttributeDialogProps) {
-  const [attribute, setAttribute] = useState<MergeAttributeKey>("first_name")
+  // Defaults to the first Database column offered by MERGE_ATTRIBUTES.
+  const [attribute, setAttribute] = useState<MergeAttributeKey>(
+    MERGE_ATTRIBUTES[0].key
+  )
   const [fallback, setFallback] = useState("")
 
   function handleInsert() {
     onInsert(buildTag(attribute, fallback.trim()))
     onOpenChange(false)
     setFallback("")
-    setAttribute("first_name")
+    setAttribute(MERGE_ATTRIBUTES[0].key)
   }
 
   return (

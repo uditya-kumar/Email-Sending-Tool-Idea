@@ -1,4 +1,4 @@
-import { Copy, FileText, MoreVertical, Plus, Trash2 } from "lucide-react"
+import { Copy, FileText, MoreVertical, Pencil, Plus, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { describeSequence } from "@/lib/sequence"
 import { Button } from "@/components/ui/button"
@@ -15,6 +15,8 @@ interface TemplateSidebarProps {
   activeId: string
   onSelect: (id: string) => void
   onAdd: () => void
+  /** Opens the rename dialog for this template. */
+  onRename: (id: string) => void
   onDuplicate: (id: string) => void
   onDelete: (id: string) => void
 }
@@ -25,6 +27,7 @@ export function TemplateSidebar({
   activeId,
   onSelect,
   onAdd,
+  onRename,
   onDuplicate,
   onDelete,
 }: TemplateSidebarProps) {
@@ -42,6 +45,7 @@ export function TemplateSidebar({
             template={template}
             active={template.id === activeId}
             onClick={() => onSelect(template.id)}
+            onRename={() => onRename(template.id)}
             onDuplicate={() => onDuplicate(template.id)}
             onDelete={() => onDelete(template.id)}
           />
@@ -63,12 +67,14 @@ function TemplateCard({
   template,
   active,
   onClick,
+  onRename,
   onDuplicate,
   onDelete,
 }: {
   template: EmailTemplate
   active: boolean
   onClick: () => void
+  onRename: () => void
   onDuplicate: () => void
   onDelete: () => void
 }) {
@@ -115,6 +121,12 @@ function TemplateCard({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-40">
+          <DropdownMenuItem
+            onSelect={onRename}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Pencil className="size-4" /> Rename
+          </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={onDuplicate}
             onClick={(e) => e.stopPropagation()}

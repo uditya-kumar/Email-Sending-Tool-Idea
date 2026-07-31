@@ -1,8 +1,11 @@
-import { Clock, Mail, Send } from "lucide-react"
+import { Clock, Mail } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { SendTimeSelect } from "@/components/common/SendTimeSelect"
+import { fullName } from "@/lib/leads"
 import { SequenceSidebar } from "./SequenceSidebar"
 import { EmailEditor } from "./EmailEditor"
+import { SendTestPopover } from "./SendTestPopover"
 import { ApplyTemplateMenu } from "./ApplyTemplateMenu"
 import { formatIST } from "@/lib/time"
 import type { EmailTemplate, Lead, SequenceStep } from "@/lib/types"
@@ -22,6 +25,8 @@ interface ContentStepProps {
   onDeleteStep: (id: string) => void
   onChangeDelay: (id: string, waitDays: number) => void
   onChangeSendTime: (hhmm: string) => void
+  /** Connected Gmail address — the test send needs one to send from. */
+  senderEmail?: string
 }
 
 /** Compose step 1 — sequence sidebar + email composition canvas for one recipient. */
@@ -38,6 +43,7 @@ export function ContentStep({
   onDeleteStep,
   onChangeDelay,
   onChangeSendTime,
+  senderEmail,
 }: ContentStepProps) {
   const active = steps.find((s) => s.id === activeStepId && s.kind === "email")
   const isFollowUp = active ? active.name.toLowerCase().includes("follow") : false
@@ -61,7 +67,7 @@ export function ContentStep({
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3 shadow-sm">
             <div className="text-sm">
               <p className="font-medium text-foreground">
-                Writing to {lead.contactFullName || lead.email}
+                Writing to {fullName(lead) || lead.email}
               </p>
               <p className="text-muted-foreground">
                 {lead.companyName || "—"} · sends at {formatIST(lead.sendTimeIST)}
@@ -74,12 +80,11 @@ export function ContentStep({
               >
                 <Clock className="size-4" /> Send time (IST)
               </Label>
-              <Input
+              {/* Writes straight back to the lead, so the Database row updates too. */}
+              <SendTimeSelect
                 id="send-time"
-                type="time"
                 value={lead.sendTimeIST}
-                onChange={(e) => onChangeSendTime(e.target.value)}
-                className="h-8 w-28"
+                onChange={onChangeSendTime}
               />
               <ApplyTemplateMenu templates={templates} onApply={onApplyTemplate} />
             </div>
@@ -111,7 +116,7 @@ export function ContentStep({
                     }
                     className="h-8 flex-1 border-0 px-0 text-foreground shadow-none focus-visible:ring-0"
                   />
-                  <Send className="size-4 text-muted-foreground" />
+                  <SendTestPopover senderEmail={senderEmail} />
                 </div>
 
                 <EmailEditor

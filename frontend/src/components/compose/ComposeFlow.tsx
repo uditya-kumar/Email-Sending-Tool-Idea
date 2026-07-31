@@ -3,6 +3,7 @@ import { toast } from "sonner"
 import { ComposeHeader } from "./ComposeHeader"
 import { ContentStep } from "./ContentStep"
 import { PreviewStep } from "./PreviewStep"
+import { fullName } from "@/lib/leads"
 import { stepsFromTemplate } from "@/lib/mock-data"
 import {
   appendFollowUp,
@@ -28,6 +29,8 @@ interface ComposeFlowProps {
   onLeadChange: (patch: Partial<Lead>) => void
   onLaunch: () => void
   onBack: () => void
+  /** Connected Gmail address — the test send needs one to send from. */
+  senderEmail?: string
 }
 
 /**
@@ -42,6 +45,7 @@ export function ComposeFlow({
   onLeadChange,
   onLaunch,
   onBack,
+  senderEmail,
 }: ComposeFlowProps) {
   const [step, setStep] = useState<ComposeStep>("content")
   const [activeStepId, setActiveStepId] = useState(
@@ -73,7 +77,7 @@ export function ComposeFlow({
     setActiveStepId(next.find((s) => s.kind === "email")?.id ?? "")
     toast.success(`Applied "${template.name}"`, {
       description: `${describeSequence(next)} — edit anything below for ${
-        lead.contactFullName || lead.email
+        fullName(lead) || lead.email
       }.`,
     })
   }
@@ -102,6 +106,7 @@ export function ComposeFlow({
           onDeleteStep={deleteStep}
           onChangeDelay={(id, days) => onStepsChange(setDelayDays(steps, id, days))}
           onChangeSendTime={(hhmm) => onLeadChange({ sendTimeIST: hhmm })}
+          senderEmail={senderEmail}
         />
       ) : (
         <PreviewStep lead={lead} steps={steps} onLaunch={onLaunch} />

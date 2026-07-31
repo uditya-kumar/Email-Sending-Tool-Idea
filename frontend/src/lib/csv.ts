@@ -36,16 +36,31 @@ function pick(row: Record<string, string>, ...candidates: string[]): string {
   return ""
 }
 
+/**
+ * Split a single-name column into first + last. Exports that only carry a whole
+ * name still have to land in the two fields the table stores, so the first word
+ * becomes the first name and whatever follows is the last.
+ */
+function splitName(name: string): { firstName: string; lastName: string } {
+  const [first = "", ...rest] = name.trim().split(/\s+/)
+  return { firstName: first, lastName: rest.join(" ") }
+}
+
 let counter = 0
 function rowToLead(row: Record<string, string>): Lead {
   counter += 1
   const email = pick(row, "email", "emailaddress")
+  const firstName = pick(row, "firstname", "givenname")
+  const lastName = pick(row, "lastname", "surname", "familyname")
+  // Only fall back to splitting a whole name when the row has no separate parts.
+  const name =
+    firstName || lastName
+      ? { firstName, lastName }
+      : splitName(pick(row, "fullname", "contactperson", "contactname", "name"))
   return {
     id: `csv-${counter}-${email || "row"}`,
     companyName: pick(row, "company", "companyname", "organization"),
-    contactFullName:
-      pick(row, "fullname", "contactperson", "contactname", "name") ||
-      [pick(row, "firstname"), pick(row, "lastname")].filter(Boolean).join(" "),
+    ...name,
     email,
     personalizationLine: pick(row, "personalization", "personalizationline", "note"),
     sendTimeIST: pick(row, "sendtime", "sendtimeist", "time") || "10:00",
@@ -61,7 +76,8 @@ export function leadsToCsv(leads: Lead[]): string {
   return Papa.unparse(
     leads.map((l) => ({
       "Company Name": l.companyName,
-      "Contact Person": l.contactFullName,
+      "First Name": l.firstName,
+      "Last Name": l.lastName,
       "Email Address": l.email,
       "Personalization Line": l.personalizationLine,
       "Send Time (IST)": l.sendTimeIST,

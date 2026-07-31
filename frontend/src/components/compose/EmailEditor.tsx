@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { InsertAttributeDialog } from "./InsertAttributeDialog"
+import { MergeTagHighlight } from "./merge-tag-highlight"
 
 interface EmailEditorProps {
   bodyHtml: string
@@ -28,6 +29,32 @@ function countWords(text: string): number {
   return trimmed ? trimmed.split(/\s+/).length : 0
 }
 
+/** One icon button in the formatting toolbar; highlighted while its mark is on. */
+function ToolbarButton({
+  active,
+  onClick,
+  label,
+  children,
+}: {
+  active?: boolean
+  onClick: () => void
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      aria-label={label}
+      onClick={onClick}
+      className={cn(active && "bg-muted text-foreground")}
+    >
+      {children}
+    </Button>
+  )
+}
+
 /** Rich-text email body editor (Tiptap) with a Hunter-style toolbar + footer. */
 export function EmailEditor({ bodyHtml, onChange }: EmailEditorProps) {
   const [attrOpen, setAttrOpen] = useState(false)
@@ -38,6 +65,8 @@ export function EmailEditor({ bodyHtml, onChange }: EmailEditorProps) {
       StarterKit.configure({ heading: false }),
       Link.configure({ openOnClick: false, autolink: true }),
       Placeholder.configure({ placeholder: "Compose your email" }),
+      // Greys out {{merge_tags}} without turning them into un-editable atoms.
+      MergeTagHighlight,
     ],
     content: bodyHtml || "",
     // Seed the initial count once the editor mounts with existing content.
@@ -67,29 +96,6 @@ export function EmailEditor({ bodyHtml, onChange }: EmailEditorProps) {
     }
     editor?.chain().focus().extendMarkRange("link").setLink({ href: url }).run()
   }
-
-  const ToolbarButton = ({
-    active,
-    onClick,
-    label,
-    children,
-  }: {
-    active?: boolean
-    onClick: () => void
-    label: string
-    children: React.ReactNode
-  }) => (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon-sm"
-      aria-label={label}
-      onClick={onClick}
-      className={cn(active && "bg-muted text-foreground")}
-    >
-      {children}
-    </Button>
-  )
 
   return (
     <div className="flex flex-col">

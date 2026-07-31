@@ -1,10 +1,9 @@
 import { useMemo } from "react"
 import type { ColumnDef, RowData } from "@tanstack/react-table"
-import { Pencil, Send, Trash2 } from "lucide-react"
-import { Checkbox } from "@/components/ui/checkbox"
+import { CalendarX, Pencil, Send, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { LeadStatusBadge } from "@/components/common/StatusBadge"
+import { SendTimeSelect } from "@/components/common/SendTimeSelect"
 import type { Lead } from "@/lib/types"
 
 // Extend TanStack column meta with our layout hints.
@@ -23,6 +22,8 @@ interface UseLeadColumnsArgs {
   onEdit: (lead: Lead) => void
   /** Opens this recipient's own Content → Preview → Launch flow. */
   onSend: (lead: Lead) => void
+  /** Un-schedules a launched recipient, returning them to draft. */
+  onCancelSchedule: (lead: Lead) => void
 }
 
 /** TanStack column definitions for the Database leads table. */
@@ -31,31 +32,10 @@ export function useLeadColumns({
   onDelete,
   onEdit,
   onSend,
+  onCancelSchedule,
 }: UseLeadColumnsArgs): ColumnDef<Lead>[] {
   return useMemo<ColumnDef<Lead>[]>(
     () => [
-      {
-        id: "select",
-        header: ({ table }) => (
-          <Checkbox
-            checked={
-              table.getIsAllPageRowsSelected() ||
-              (table.getIsSomePageRowsSelected() && "indeterminate")
-            }
-            onCheckedChange={(v) => table.toggleAllPageRowsSelected(!!v)}
-            aria-label="Select all"
-          />
-        ),
-        cell: ({ row }) => (
-          <Checkbox
-            checked={row.getIsSelected()}
-            onCheckedChange={(v) => row.toggleSelected(!!v)}
-            aria-label="Select row"
-          />
-        ),
-        enableSorting: false,
-        size: 40,
-      },
       {
         accessorKey: "email",
         header: "Email address",
@@ -67,12 +47,20 @@ export function useLeadColumns({
         meta: { minWidth: "200px" },
       },
       {
-        accessorKey: "contactFullName",
-        header: "Contact person",
+        accessorKey: "firstName",
+        header: "First name",
         cell: ({ row }) => (
-          <span className="whitespace-nowrap">{row.original.contactFullName}</span>
+          <span className="whitespace-nowrap">{row.original.firstName || "—"}</span>
         ),
-        meta: { minWidth: "170px" },
+        meta: { minWidth: "130px" },
+      },
+      {
+        accessorKey: "lastName",
+        header: "Last name",
+        cell: ({ row }) => (
+          <span className="whitespace-nowrap">{row.original.lastName || "—"}</span>
+        ),
+        meta: { minWidth: "130px" },
       },
       {
         accessorKey: "companyName",
@@ -127,14 +115,12 @@ export function useLeadColumns({
         accessorKey: "sendTimeIST",
         header: "Send time (IST)",
         cell: ({ row }) => (
-          <Input
-            type="time"
+          <SendTimeSelect
             value={row.original.sendTimeIST}
-            onChange={(e) => onEditTime(row.original.id, e.target.value)}
-            className="h-8 w-28"
+            onChange={(hhmm) => onEditTime(row.original.id, hhmm)}
           />
         ),
-        meta: { minWidth: "140px" },
+        meta: { minWidth: "150px" },
       },
       {
         accessorKey: "status",
@@ -147,37 +133,53 @@ export function useLeadColumns({
         header: "Actions",
         enableSorting: false,
         meta: { sticky: true, minWidth: "180px" },
-        cell: ({ row }) => (
-          <div className="flex items-center gap-1">
-            {/* Entry point into this recipient's own compose flow. */}
-            <Button
-              size="sm"
-              className="gap-1.5"
-              onClick={() => onSend(row.original)}
-            >
-              <Send className="size-3.5" />
-              {row.original.status === "draft" ? "Send" : "Open"}
-            </Button>
+        cell: ({ row }) =>
+          /*
+           * A scheduled recipient is queued to send, so editing or deleting them
+           * would silently diverge from what's about to go out. Cancelling the
+           * schedule is the only action offered until they're back to draft.
+           */
+          row.original.status === "scheduled" ? (
             <Button
               variant="outline"
-              size="icon-sm"
-              onClick={() => onEdit(row.original)}
-              aria-label="Edit lead"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => onCancelSchedule(row.original)}
             >
-              <Pencil />
+              <CalendarX className="size-3.5" />
+              Cancel schedule
             </Button>
-            <Button
-              variant="destructive"
-              size="icon-sm"
-              onClick={() => onDelete(row.original.id)}
-              aria-label="Delete lead"
-            >
-              <Trash2 />
-            </Button>
-          </div>
-        ),
+          ) : (
+            <div className="flex items-center gap-1">
+              {/* Entry point into this recipient's own compose flow. */}
+              <Button
+                size="sm"
+                className="gap-1.5"
+                onClick={() => onSend(row.original)}
+              >
+                <Send className="size-3.5" />
+                {row.original.status === "draft" ? "Send" : "Open"}
+              </Button>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                onClick={() => onEdit(row.original)}
+                aria-label="Edit lead"
+              >
+                <Pencil />
+              </Button>
+              <Button
+                variant="destructive"
+                size="icon-sm"
+                onClick={() => onDelete(row.original.id)}
+                aria-label="Delete lead"
+              >
+                <Trash2 />
+              </Button>
+            </div>
+          ),
       },
     ],
-    [onEditTime, onDelete, onEdit, onSend]
+    [onEditTime, onDelete, onEdit, onSend, onCancelSchedule]
   )
 }

@@ -1,15 +1,18 @@
 "use client"
 
-import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
-
   return (
     <Sonner
-      theme={theme as ToasterProps["theme"]}
+      /*
+       * Pinned to light because the app itself is light-only (nothing ever sets
+       * the `.dark` class). Sonner's default "system" theme follows the OS, so
+       * on a dark-mode machine it painted dark-theme text — near-white
+       * descriptions on a white toast.
+       */
+      theme="light"
       className="toaster group"
       icons={{
         success: (
@@ -42,6 +45,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
         classNames: {
           // Room on the right so content never runs under the close button.
           toast: "cn-toast !pr-10",
+          // Sonner hardcodes #3f3f3f here; use our own muted token instead.
+          description: "!text-muted-foreground",
           /*
            * Sonner parks the close button outside the top-left corner and
            * colors it with --gray4/--gray12 (undefined in this theme). Pull it
