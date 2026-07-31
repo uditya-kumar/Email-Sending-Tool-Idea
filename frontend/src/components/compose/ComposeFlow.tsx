@@ -3,12 +3,28 @@ import { toast } from "sonner"
 import { ComposeHeader } from "./ComposeHeader"
 import { ContentStep } from "./ContentStep"
 import { PreviewStep } from "./PreviewStep"
-import type { ComposeStep, Lead, SequenceStep } from "@/lib/types"
+import { stepsFromTemplate } from "@/lib/mock-data"
+import {
+  appendFollowUp,
+  describeSequence,
+  duplicateEmailStep,
+  patchStep,
+  removeEmailStep,
+  setDelayDays,
+} from "@/lib/sequence"
+import type {
+  ComposeStep,
+  EmailTemplate,
+  Lead,
+  SequenceStep,
+} from "@/lib/types"
 
 interface ComposeFlowProps {
   lead: Lead
   steps: SequenceStep[]
   onStepsChange: (steps: SequenceStep[]) => void
+  /** Saved sequence templates the user can drop onto this recipient. */
+  templates: EmailTemplate[]
   onLeadChange: (patch: Partial<Lead>) => void
   onLaunch: () => void
   onBack: () => void
@@ -22,6 +38,7 @@ export function ComposeFlow({
   lead,
   steps,
   onStepsChange,
+  templates,
   onLeadChange,
   onLaunch,
   onBack,
@@ -35,68 +52,30 @@ export function ComposeFlow({
     (s) => s.kind === "email" && (s.subject || s.bodyHtml)
   )
 
-  function updateStep(id: string, patch: Partial<SequenceStep>) {
-    onStepsChange(steps.map((s) => (s.id === id ? { ...s, ...patch } : s)))
-  }
-
   function addStep() {
-    const followCount = steps.filter((s) =>
-      s.name.toLowerCase().includes("follow")
-    ).length
-    const stamp = `${lead.id}-${steps.length}-${followCount}`
-    const delay: SequenceStep = {
-      id: `delay-${stamp}`,
-      kind: "delay",
-      name: "Wait",
-      waitDays: 3,
-    }
-    const email: SequenceStep = {
-      id: `email-${stamp}`,
-      kind: "email",
-      name: `Follow-up #${followCount + 1}`,
-      subject: "",
-      bodyHtml: "",
-      abTest: false,
-    }
-    onStepsChange([...steps, delay, email])
-    setActiveStepId(email.id)
-  }
-
-  function duplicateStep(id: string) {
-    const idx = steps.findIndex((s) => s.id === id)
-    if (idx === -1) return
-    const original = steps[idx]
-    const copy: SequenceStep = {
-      ...original,
-      id: `email-copy-${steps.length}-${id}`,
-      name: `${original.name} (copy)`,
-    }
-    const delay: SequenceStep = {
-      id: `delay-copy-${steps.length}-${id}`,
-      kind: "delay",
-      name: "Wait",
-      waitDays: 3,
-    }
-    const next = [...steps]
-    next.splice(idx + 1, 0, delay, copy)
+    const { steps: next, newStepId } = appendFollowUp(steps, lead.id)
     onStepsChange(next)
+    setActiveStepId(newStepId)
   }
 
   function deleteStep(id: string) {
-    const idx = steps.findIndex((s) => s.id === id)
-    if (idx === -1) return
-    // Also drop the delay immediately preceding this email step, if any.
-    const start = idx > 0 && steps[idx - 1].kind === "delay" ? idx - 1 : idx
-    const next = steps.filter((_, i) => i < start || i > idx)
+    const next = removeEmailStep(steps, id)
     if (id === activeStepId) {
-      const nextEmail = next.find((s) => s.kind === "email")
-      setActiveStepId(nextEmail?.id ?? "")
+      setActiveStepId(next.find((s) => s.kind === "email")?.id ?? "")
     }
     onStepsChange(next)
   }
 
-  function changeDelay(id: string, waitDays: number) {
-    onStepsChange(steps.map((s) => (s.id === id ? { ...s, waitDays } : s)))
+  /** Drop a saved template in wholesale: every email, follow-up and wait. */
+  function applyTemplate(template: EmailTemplate) {
+    const next = stepsFromTemplate(template, lead.id)
+    onStepsChange(next)
+    setActiveStepId(next.find((s) => s.kind === "email")?.id ?? "")
+    toast.success(`Applied "${template.name}"`, {
+      description: `${describeSequence(next)} — edit anything below for ${
+        lead.contactFullName || lead.email
+      }.`,
+    })
   }
 
   return (
@@ -113,14 +92,16 @@ export function ComposeFlow({
         <ContentStep
           lead={lead}
           steps={steps}
+          templates={templates}
+          onApplyTemplate={applyTemplate}
           activeStepId={activeStepId}
           onSelectStep={setActiveStepId}
-          onUpdateStep={updateStep}
+          onUpdateStep={(id, patch) => onStepsChange(patchStep(steps, id, patch))}
           onAddStep={addStep}
           onGenerate={() => toast.info("AI sequence generation is coming soon.")}
-          onDuplicateStep={duplicateStep}
+          onDuplicateStep={(id) => onStepsChange(duplicateEmailStep(steps, id))}
           onDeleteStep={deleteStep}
-          onChangeDelay={changeDelay}
+          onChangeDelay={(id, days) => onStepsChange(setDelayDays(steps, id, days))}
           onChangeSendTime={(hhmm) => onLeadChange({ sendTimeIST: hhmm })}
         />
       ) : (

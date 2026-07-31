@@ -7,6 +7,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
@@ -48,27 +49,46 @@ function ToggleRow({
   description,
   checked,
   onChange,
+  disabled,
 }: {
   title: string
   description: string
   checked: boolean
   onChange: (v: boolean) => void
+  disabled?: boolean
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+    <div
+      className={cn(
+        "flex items-center justify-between gap-4 px-4 py-3.5",
+        disabled && "opacity-60"
+      )}
+    >
       <div>
         <p className="text-sm font-medium text-foreground">{title}</p>
         <p className="text-sm text-muted-foreground">{description}</p>
       </div>
-      <Switch checked={checked} onCheckedChange={onChange} />
+      <Switch checked={checked} onCheckedChange={onChange} disabled={disabled} />
     </div>
   )
 }
 
-function SectionHeading({ title, description }: { title: string; description: string }) {
+function SectionHeading({
+  title,
+  description,
+  badge,
+}: {
+  title: string
+  description: string
+  /** Optional pill beside the title, e.g. "Coming soon". */
+  badge?: string
+}) {
   return (
     <div className="mb-3">
-      <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+        {badge && <Badge variant="secondary">{badge}</Badge>}
+      </div>
       <p className="text-sm text-muted-foreground">{description}</p>
     </div>
   )
@@ -192,7 +212,8 @@ export function SettingsPage({
       <section>
         <SectionHeading
           title="Tracking"
-          description="Choose whether to track email opens and link clicks. Only available for HTML emails."
+          badge="Coming soon"
+          description="Open and click tracking isn't wired up yet. Until then, replies are the engagement signal."
         />
         <div className="divide-y rounded-xl border bg-card">
           <ToggleRow
@@ -200,12 +221,14 @@ export function SettingsPage({
             description="See when your recipients open your emails. May require consent depending on region."
             checked={settings.trackOpens}
             onChange={(v) => onSettingsChange({ trackOpens: v })}
+            disabled
           />
           <ToggleRow
             title="Track link clicks"
             description="See when your recipients click the links in your emails."
             checked={settings.trackClicks}
             onChange={(v) => onSettingsChange({ trackClicks: v })}
+            disabled
           />
         </div>
       </section>

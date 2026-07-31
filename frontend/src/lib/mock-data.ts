@@ -1,4 +1,5 @@
 import type {
+  EmailTemplate,
   Lead,
   SenderAccount,
   SequenceSettings,
@@ -144,6 +145,47 @@ export function newSequenceForLead(leadId: string): SequenceStep[] {
       abTest: false,
     },
   ]
+}
+
+/** Saved sequence templates the user can apply to any recipient. */
+export const MOCK_TEMPLATES: EmailTemplate[] = [
+  {
+    id: "t1",
+    name: "AI engineering outreach",
+    steps: newSequenceForLead("t1"),
+  },
+]
+
+/** A blank template: one opening email, ready to be named and written. */
+export function newTemplate(id: string): EmailTemplate {
+  return {
+    id,
+    name: "Untitled template",
+    steps: [
+      {
+        id: `${id}-s1`,
+        kind: "email",
+        name: "Opening email",
+        subject: "",
+        bodyHtml: "",
+        abTest: false,
+      },
+    ],
+  }
+}
+
+/**
+ * Copy a template's steps for one recipient, re-keying every id so the recipient
+ * owns their own editable copy (and two leads never share a step id).
+ */
+export function stepsFromTemplate(
+  template: EmailTemplate,
+  leadId: string
+): SequenceStep[] {
+  return template.steps.map((step, i) => ({
+    ...step,
+    id: `${leadId}-${template.id}-${i}`,
+  }))
 }
 
 export const MOCK_SENDERS: SenderAccount[] = [

@@ -1,11 +1,19 @@
-import { Database, Mail, Settings } from "lucide-react"
+import { Database, FileText, Mail, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
+/** Pages reachable from the header nav. */
+type NavView = "database" | "templates"
+
+const NAV: { id: NavView; label: string; icon: typeof Database }[] = [
+  { id: "database", label: "Database", icon: Database },
+  { id: "templates", label: "Templates", icon: FileText },
+]
+
 interface AppHeaderProps {
   /** Which top-level page is showing ("compose" keeps Database highlighted). */
-  active: "database" | "settings" | "compose"
-  onNavigate: (view: "database" | "settings") => void
+  active: "database" | "templates" | "settings" | "compose"
+  onNavigate: (view: NavView | "settings") => void
   recipientCount: number
 }
 
@@ -22,17 +30,24 @@ export function AppHeader({ active, onNavigate, recipientCount }: AppHeaderProps
         </span>
 
         <nav className="ml-2 flex items-center gap-1">
-          <button
-            onClick={() => onNavigate("database")}
-            className={cn(
-              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-              active === "settings"
-                ? "text-muted-foreground hover:text-foreground"
-                : "bg-accent/10 text-accent"
-            )}
-          >
-            <Database className="size-4" /> Database
-          </button>
+          {NAV.map(({ id, label, icon: Icon }) => {
+            // Compose is opened from a Database row, so it keeps Database lit.
+            const isActive = id === "database" ? active === "database" || active === "compose" : active === id
+            return (
+              <button
+                key={id}
+                onClick={() => onNavigate(id)}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-accent/10 text-accent"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Icon className="size-4" /> {label}
+              </button>
+            )
+          })}
         </nav>
       </div>
 

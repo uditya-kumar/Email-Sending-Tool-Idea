@@ -57,6 +57,17 @@ export interface SequenceStep {
   waitDays?: number
 }
 
+/**
+ * A reusable template: the whole sequence blueprint — opening email, waits, and
+ * follow-ups. Applying one to a recipient replaces their entire compose setup.
+ */
+export interface EmailTemplate {
+  id: string
+  name: string
+  /** Same step list a recipient's sequence uses, so it drops straight in. */
+  steps: SequenceStep[]
+}
+
 export type SenderStatus = "active" | "needs_protection" | "disconnected"
 
 /** A connected Gmail sender account. */
@@ -98,7 +109,7 @@ export interface SequenceSettings {
 export type SequencesByLead = Record<string, SequenceStep[]>
 
 /** Top-level pages of the app. */
-export type AppView = "database" | "settings" | "compose"
+export type AppView = "database" | "templates" | "settings" | "compose"
 
 /** Steps inside the per-recipient compose flow. */
 export type ComposeStep = "content" | "preview"

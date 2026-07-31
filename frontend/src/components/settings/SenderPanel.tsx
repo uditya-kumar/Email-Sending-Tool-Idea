@@ -106,21 +106,6 @@ export function SenderPanel({
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <Label>Sending capacity</Label>
-                  <div className="rounded-lg border bg-muted/40 p-3 text-sm">
-                    <p className="font-medium text-foreground">Send gradually from day one</p>
-                    <p className="mt-1 text-muted-foreground">
-                      Start with a lower daily sending limit and increase it automatically
-                      over time. This protects your sender reputation and reduces the risk of
-                      landing in spam.
-                    </p>
-                    <Button variant="outline" size="sm" className="mt-2 bg-background">
-                      Enable progressive sending
-                    </Button>
-                  </div>
-                </div>
-
                 <div className="space-y-1.5">
                   <Label>Daily limit</Label>
                   <Input

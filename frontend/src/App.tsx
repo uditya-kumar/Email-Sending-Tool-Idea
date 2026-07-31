@@ -4,21 +4,23 @@ import { toast } from "sonner"
 import { AppHeader } from "@/components/layout/AppHeader"
 import { DatabasePage } from "@/components/database/DatabasePage"
 import { ComposeFlow } from "@/components/compose/ComposeFlow"
+import { TemplatesPage } from "@/components/templates/TemplatesPage"
 import { SettingsPage } from "@/components/settings/SettingsPage"
 import { SenderPanel } from "@/components/settings/SenderPanel"
 import {
   DEFAULT_SETTINGS,
   MOCK_LEADS,
   MOCK_SENDERS,
+  MOCK_TEMPLATES,
   newSequenceForLead,
 } from "@/lib/mock-data"
 import { formatIST } from "@/lib/time"
 import type {
   AppView,
+  EmailTemplate,
   Lead,
   SenderAccount,
   SequenceSettings,
-  SequenceStep,
   SequencesByLead,
 } from "@/lib/types"
 
@@ -36,6 +38,7 @@ export default function App() {
   const [sequences, setSequences] = useState<SequencesByLead>(() =>
     seedSequences(MOCK_LEADS)
   )
+  const [templates, setTemplates] = useState<EmailTemplate[]>(MOCK_TEMPLATES)
   const [senders, setSenders] = useState<SenderAccount[]>(MOCK_SENDERS)
   const [settings, setSettings] = useState<SequenceSettings>(DEFAULT_SETTINGS)
   const [editingSenderId, setEditingSenderId] = useState<string | null>(null)
@@ -103,10 +106,15 @@ export default function App() {
             onStepsChange={(steps) =>
               setSequences((prev) => ({ ...prev, [composingLead.id]: steps }))
             }
+            templates={templates}
             onLeadChange={(patch) => patchLead(composingLead.id, patch)}
             onLaunch={() => launchLead(composingLead)}
             onBack={backToDatabase}
           />
+        )}
+
+        {view === "templates" && (
+          <TemplatesPage templates={templates} onChange={setTemplates} />
         )}
 
         {view === "settings" && (
