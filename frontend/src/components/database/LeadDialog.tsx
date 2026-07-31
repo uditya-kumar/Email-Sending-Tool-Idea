@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
-import { SendTimeSelect } from "@/components/common/SendTimeSelect"
+import { SendTimePicker } from "@/components/common/SendTimePicker"
 import { isValidIST } from "@/lib/time"
 import type { Lead } from "@/lib/types"
 
@@ -165,7 +165,7 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
 
           <div className="grid grid-cols-2 gap-4">
             <Field label="Send time (IST)" required>
-              <SendTimeSelect
+              <SendTimePicker
                 value={form.sendTimeIST}
                 onChange={(hhmm) => set("sendTimeIST", hhmm)}
                 className="w-full"

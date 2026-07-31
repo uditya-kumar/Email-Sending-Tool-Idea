@@ -1,7 +1,7 @@
 import { Clock, Mail } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { SendTimeSelect } from "@/components/common/SendTimeSelect"
+import { SendTimePicker } from "@/components/common/SendTimePicker"
 import { fullName } from "@/lib/leads"
 import { SequenceSidebar } from "./SequenceSidebar"
 import { EmailEditor } from "./EmailEditor"
@@ -81,7 +81,7 @@ export function ContentStep({
                 <Clock className="size-4" /> Send time (IST)
               </Label>
               {/* Writes straight back to the lead, so the Database row updates too. */}
-              <SendTimeSelect
+              <SendTimePicker
                 id="send-time"
                 value={lead.sendTimeIST}
                 onChange={onChangeSendTime}

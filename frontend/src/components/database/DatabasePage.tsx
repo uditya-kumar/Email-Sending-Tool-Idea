@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
-import { useLeadColumns } from "./useLeadColumns"
+import { LEAD_COLUMNS } from "./leadColumns"
 import { LeadDialog } from "./LeadDialog"
 import { leadsToCsv, parseLeadsCsv } from "@/lib/csv"
 import type { Lead } from "@/lib/types"
@@ -56,18 +56,6 @@ export function DatabasePage({
   const [editingLead, setEditingLead] = useState<Lead | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const columns = useLeadColumns({
-    onEditTime: (id, value) =>
-      onChange(leads.map((l) => (l.id === id ? { ...l, sendTimeIST: value } : l))),
-    onDelete: (id) => onChange(leads.filter((l) => l.id !== id)),
-    onEdit: (lead) => {
-      setEditingLead(lead)
-      setDialogOpen(true)
-    },
-    onSend,
-    onCancelSchedule,
-  })
-
   function openAdd() {
     setEditingLead(null)
     setDialogOpen(true)
@@ -86,13 +74,29 @@ export function DatabasePage({
 
   const table = useReactTable({
     data: leads,
-    columns,
+    columns: LEAD_COLUMNS,
     state: { globalFilter, sorting },
     onGlobalFilterChange: setGlobalFilter,
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getSortedRowModel: getSortedRowModel(),
+    /*
+     * Row actions travel as meta so LEAD_COLUMNS can stay a constant. These are
+     * re-created every render, but meta isn't part of any memo key, so the cells
+     * keep their identity and an in-progress edit holds focus.
+     */
+    meta: {
+      onEditTime: (id, value) =>
+        onChange(leads.map((l) => (l.id === id ? { ...l, sendTimeIST: value } : l))),
+      onDelete: (id) => onChange(leads.filter((l) => l.id !== id)),
+      onEdit: (lead) => {
+        setEditingLead(lead)
+        setDialogOpen(true)
+      },
+      onSend,
+      onCancelSchedule,
+    },
   })
 
   async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
@@ -240,7 +244,7 @@ export function DatabasePage({
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={columns.length} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={LEAD_COLUMNS.length} className="h-24 text-center text-muted-foreground">
                   No recipients yet. Import a CSV to get started.
                 </TableCell>
               </TableRow>
