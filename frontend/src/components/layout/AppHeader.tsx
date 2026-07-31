@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 /** Pages reachable from the header nav. */
-type NavView = "database" | "templates"
+export type NavView = "database" | "templates"
 
 const NAV: { id: NavView; label: string; icon: typeof Database }[] = [
   { id: "database", label: "Database", icon: Database },

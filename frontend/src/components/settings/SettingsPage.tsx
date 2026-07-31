@@ -1,4 +1,4 @@
-import { Pencil, Plus } from "lucide-react"
+import { ArrowLeft, Pencil, Plus } from "lucide-react"
 import {
   Table,
   TableBody,
@@ -41,6 +41,10 @@ interface SettingsPageProps {
   onSettingsChange: (patch: Partial<SequenceSettings>) => void
   onEditSender: (sender: SenderAccount) => void
   onSaveSchedule: () => void
+  /** Returns to whichever page Settings was opened from. */
+  onBack: () => void
+  /** Label for the Back button, e.g. "Database" or "Templates". */
+  backLabel: string
 }
 
 /** Row with a label/description on the left and a control on the right. */
@@ -104,6 +108,8 @@ export function SettingsPage({
   onSettingsChange,
   onEditSender,
   onSaveSchedule,
+  onBack,
+  backLabel,
 }: SettingsPageProps) {
   function toggleDay(day: Weekday) {
     const has = settings.sendingDays.includes(day)
@@ -116,6 +122,26 @@ export function SettingsPage({
   return (
     <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-8">
       <div>
+        {/* Back to wherever Settings was opened from. */}
+        <div className="mb-3 flex items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onBack}
+            aria-label={`Back to ${backLabel}`}
+          >
+            <ArrowLeft />
+          </Button>
+          <button
+            onClick={onBack}
+            className="text-sm text-muted-foreground hover:text-foreground"
+          >
+            {backLabel}
+          </button>
+          <span className="text-sm text-muted-foreground">/</span>
+          <span className="text-sm font-medium text-foreground">Settings</span>
+        </div>
+
         <h1 className="text-xl font-semibold text-foreground">Settings</h1>
         <p className="text-sm text-muted-foreground">
           Sending account, tracking and the global window. These apply to every

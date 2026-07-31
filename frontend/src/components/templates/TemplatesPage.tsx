@@ -1,5 +1,4 @@
 import { useState } from "react"
-import { toast } from "sonner"
 import { FileText, Mail, Send } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { SequenceSidebar } from "@/components/compose/SequenceSidebar"
@@ -145,9 +144,6 @@ export function TemplatesPage({ templates, onChange }: TemplatesPageProps) {
               activeStepId={activeStepId}
               onSelect={setActiveStepId}
               onAddStep={addStep}
-              onGenerate={() =>
-                toast.info("AI sequence generation is coming soon.")
-              }
               onDuplicateStep={(id) => setSteps(duplicateEmailStep(steps, id))}
               onDeleteStep={deleteStep}
               onChangeDelay={(id, days) => setSteps(setDelayDays(steps, id, days))}

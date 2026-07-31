@@ -85,8 +85,13 @@ export function useLeadColumns({
       {
         accessorKey: "personalizationLine",
         header: "Personalization line",
+        // Kept to one line with an ellipsis so rows stay uniform height; the
+        // full (possibly multiline) value is in the title tooltip.
         cell: ({ row }) => (
-          <span className="block max-w-[280px] truncate text-muted-foreground">
+          <span
+            title={row.original.personalizationLine || undefined}
+            className="block max-w-[280px] truncate whitespace-nowrap text-muted-foreground"
+          >
             {row.original.personalizationLine || "—"}
           </span>
         ),

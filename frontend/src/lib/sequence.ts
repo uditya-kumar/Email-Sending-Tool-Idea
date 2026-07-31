@@ -28,7 +28,6 @@ export function appendFollowUp(
     name: `Follow-up #${followCount + 1}`,
     subject: "",
     bodyHtml: "",
-    abTest: false,
   }
   return { steps: [...steps, delay, email], newStepId: email.id }
 }

@@ -9,10 +9,24 @@ import { LeadStatusBadge } from "@/components/common/StatusBadge"
 import type { Lead, SequenceStep } from "@/lib/types"
 
 /** A label/value row in the profile panel. Shows "—" when empty. */
-function ProfileRow({ label, value }: { label: string; value?: string }) {
+function ProfileRow({
+  label,
+  value,
+  /** Keep the value's own line breaks (the personalization line can be multiline). */
+  multiline,
+}: {
+  label: string
+  value?: string
+  multiline?: boolean
+}) {
   return (
     <p className="text-muted-foreground">
-      {label}: <span className="text-foreground">{value || "—"}</span>
+      {label}:{" "}
+      <span
+        className={cn("text-foreground", multiline && "whitespace-pre-line")}
+      >
+        {value || "—"}
+      </span>
     </p>
   )
 }
@@ -121,7 +135,11 @@ export function PreviewStep({ lead, steps, onLaunch }: PreviewStepProps) {
 
             <div className="space-y-1">
               <p className="font-semibold text-foreground">Outreach</p>
-              <ProfileRow label="Personalization" value={lead.personalizationLine} />
+              <ProfileRow
+                label="Personalization"
+                value={lead.personalizationLine}
+                multiline
+              />
               <ProfileRow label="Send time" value={formatIST(lead.sendTimeIST)} />
               <p className="text-muted-foreground">
                 Emails ready:{" "}
@@ -158,7 +176,8 @@ export function PreviewStep({ lead, steps, onLaunch }: PreviewStepProps) {
 /** One rendered email card with merge tags resolved for this lead. */
 function RenderedEmail({ step, lead }: { step: SequenceStep; lead: Lead }) {
   const subject = step.subject ? renderTags(step.subject, lead) : ""
-  const bodyHtml = step.bodyHtml ? renderTags(step.bodyHtml, lead) : ""
+  // The body is injected as HTML, so values need escaping + <br> for newlines.
+  const bodyHtml = step.bodyHtml ? renderTags(step.bodyHtml, lead, { html: true }) : ""
   const isEmpty = !step.subject && !step.bodyHtml
 
   return (

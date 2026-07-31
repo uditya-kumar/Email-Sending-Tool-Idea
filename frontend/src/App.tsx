@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Toaster } from "@/components/ui/sonner"
 import { toast } from "sonner"
-import { AppHeader } from "@/components/layout/AppHeader"
+import { AppHeader, type NavView } from "@/components/layout/AppHeader"
 import { DatabasePage } from "@/components/database/DatabasePage"
 import { ComposeFlow } from "@/components/compose/ComposeFlow"
 import { TemplatesPage } from "@/components/templates/TemplatesPage"
@@ -29,8 +29,18 @@ function seedSequences(leads: Lead[]): SequencesByLead {
   return Object.fromEntries(leads.map((l) => [l.id, newSequenceForLead(l.id)]))
 }
 
+/** Which nav page a view belongs to (compose is reached from Database). */
+function navOrigin(view: AppView): NavView {
+  return view === "templates" ? "templates" : "database"
+}
+
 export default function App() {
   const [view, setView] = useState<AppView>("database")
+  /**
+   * The page Settings was opened from, so its Back button returns there instead
+   * of always dumping the user on Database.
+   */
+  const [settingsOrigin, setSettingsOrigin] = useState<NavView>("database")
   /** Which lead's compose flow is open (null on Database/Settings). */
   const [composingId, setComposingId] = useState<string | null>(null)
 
@@ -84,6 +94,12 @@ export default function App() {
         <AppHeader
           active={view}
           onNavigate={(next) => {
+            // Remember where Settings was opened from so Back can return there.
+            if (next === "settings") {
+              if (view !== "settings") setSettingsOrigin(navOrigin(view))
+            } else {
+              setSettingsOrigin(next)
+            }
             setComposingId(null)
             setView(next)
           }}
@@ -92,10 +108,9 @@ export default function App() {
       )}
 
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {/* Database manages its own scrolling (rows scroll, chrome stays put). */}
         {view === "database" && (
-          <div className="flex-1 overflow-y-auto">
-            <DatabasePage leads={leads} onChange={setLeads} onSend={openCompose} />
-          </div>
+          <DatabasePage leads={leads} onChange={setLeads} onSend={openCompose} />
         )}
 
         {view === "compose" && composingLead && (
@@ -127,6 +142,8 @@ export default function App() {
               }
               onEditSender={(s) => setEditingSenderId(s.id)}
               onSaveSchedule={() => toast.success("Settings saved")}
+              onBack={() => setView(settingsOrigin)}
+              backLabel={settingsOrigin === "templates" ? "Templates" : "Database"}
             />
           </div>
         )}

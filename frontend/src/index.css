@@ -169,6 +169,49 @@
   background-size: 16px 16px;
 }
 
+/*
+ * Pinned table header row and column (the Database table). These must be fully
+ * opaque — a translucent background lets the rows/columns scrolling underneath
+ * show through. Each is the flattened equivalent of the alpha class it
+ * replaces, so the pinned cells match their unpinned neighbours exactly.
+ *
+ * The header colour is set on the `th`s rather than the `tr` so the row's
+ * hover:bg-* utility (which wins on specificity) can't tint it translucent.
+ */
+.pinned-head,
+.pinned-head > th {
+  /* was bg-muted/60 over the card */
+  background-color: color-mix(in oklab, var(--muted) 60%, var(--card));
+}
+.pinned-cell {
+  background-color: var(--card);
+}
+.group:hover .pinned-cell {
+  /* was bg-muted/50 over the card */
+  background-color: color-mix(in oklab, var(--muted) 50%, var(--card));
+}
+
+/*
+ * Shadows that mark what's pinned. Both live here rather than as Tailwind
+ * shadow-* utilities because the Actions header cell needs both at once, and
+ * two utilities on one element would just overwrite each other.
+ *
+ * The header's bottom edge is a shadow, not a border: border-collapse (Tailwind
+ * preflight) hands the border to the body rows, which then scroll away from the
+ * stuck header.
+ */
+.pinned-head > th {
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.pinned-cell {
+  box-shadow: -8px 0 8px -6px rgb(0 0 0 / 0.12);
+}
+.pinned-head > th.pinned-col {
+  box-shadow:
+    inset 0 -1px 0 var(--border),
+    -8px 0 8px -6px rgb(0 0 0 / 0.12);
+}
+
 /* Merge-tag pill rendered inside the editor / preview */
 .merge-tag {
   font-family: var(--font-mono);

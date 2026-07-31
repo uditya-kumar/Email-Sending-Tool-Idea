@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { isValidIST } from "@/lib/time"
 import type { Lead } from "@/lib/types"
@@ -129,10 +130,12 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
           </Field>
 
           <Field label="Personalization line">
-            <Input
+            <Textarea
               value={form.personalizationLine}
               onChange={(e) => set("personalizationLine", e.target.value)}
               placeholder="your recent work on…"
+              rows={3}
+              className="min-h-20 resize-y"
             />
           </Field>
 

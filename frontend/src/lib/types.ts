@@ -52,7 +52,6 @@ export interface SequenceStep {
   subject?: string
   /** HTML body produced by the Tiptap editor. */
   bodyHtml?: string
-  abTest?: boolean
   /** Delay fields (present when kind === "delay"). */
   waitDays?: number
 }

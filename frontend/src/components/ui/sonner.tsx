@@ -36,9 +36,23 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--border-radius": "var(--radius)",
         } as React.CSSProperties
       }
+      // Every toast gets a dismiss (X) button.
+      closeButton
       toastOptions={{
         classNames: {
-          toast: "cn-toast",
+          // Room on the right so content never runs under the close button.
+          toast: "cn-toast !pr-10",
+          /*
+           * Sonner parks the close button outside the top-left corner and
+           * colors it with --gray4/--gray12 (undefined in this theme). Pull it
+           * inside the toast, vertically centred against the right edge, and
+           * map the colors to our tokens. `transform-none` clears sonner's
+           * translate(-35%,-35%) nudge; centring uses -mt (half of size-5)
+           * because Tailwind's translate utilities write to a different
+           * property and wouldn't override it.
+           */
+          closeButton:
+            "!top-1/2 !right-3 !left-auto !-mt-2.5 !size-5 !transform-none !border-transparent !bg-transparent !text-muted-foreground hover:!bg-muted hover:!text-foreground",
         },
       }}
       {...props}

@@ -7,7 +7,6 @@ import {
   Minus,
   MoreVertical,
   Plus,
-  Sparkles,
   Trash2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -25,7 +24,6 @@ interface SequenceSidebarProps {
   activeStepId: string
   onSelect: (id: string) => void
   onAddStep: () => void
-  onGenerate: () => void
   onDuplicateStep: (id: string) => void
   onDeleteStep: (id: string) => void
   onChangeDelay: (id: string, waitDays: number) => void
@@ -37,7 +35,6 @@ export function SequenceSidebar({
   activeStepId,
   onSelect,
   onAddStep,
-  onGenerate,
   onDuplicateStep,
   onDeleteStep,
   onChangeDelay,
@@ -74,16 +71,6 @@ export function SequenceSidebar({
           onClick={onAddStep}
         >
           <Plus className="size-4" /> Add step
-        </Button>
-      </div>
-
-      <div className="border-t p-3">
-        <Button
-          variant="ghost"
-          className="w-full justify-center gap-1.5 text-accent"
-          onClick={onGenerate}
-        >
-          <Sparkles className="size-4" /> Generate sequence
         </Button>
       </div>
     </aside>

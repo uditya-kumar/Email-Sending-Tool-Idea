@@ -1,6 +1,5 @@
 import { Clock, Mail, Send } from "lucide-react"
 import { Input } from "@/components/ui/input"
-import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { SequenceSidebar } from "./SequenceSidebar"
 import { EmailEditor } from "./EmailEditor"
@@ -19,7 +18,6 @@ interface ContentStepProps {
   onSelectStep: (id: string) => void
   onUpdateStep: (id: string, patch: Partial<SequenceStep>) => void
   onAddStep: () => void
-  onGenerate: () => void
   onDuplicateStep: (id: string) => void
   onDeleteStep: (id: string) => void
   onChangeDelay: (id: string, waitDays: number) => void
@@ -36,7 +34,6 @@ export function ContentStep({
   onSelectStep,
   onUpdateStep,
   onAddStep,
-  onGenerate,
   onDuplicateStep,
   onDeleteStep,
   onChangeDelay,
@@ -52,7 +49,6 @@ export function ContentStep({
         activeStepId={activeStepId}
         onSelect={onSelectStep}
         onAddStep={onAddStep}
-        onGenerate={onGenerate}
         onDuplicateStep={onDuplicateStep}
         onDeleteStep={onDeleteStep}
         onChangeDelay={onChangeDelay}
@@ -92,24 +88,9 @@ export function ContentStep({
           {active ? (
             <>
               {/* Email header card */}
-              <div className="flex items-center justify-between rounded-xl border bg-card px-4 py-3 shadow-sm">
-                <div className="flex items-center gap-2 font-medium text-foreground">
-                  <Mail className="size-4 text-muted-foreground" />
-                  {active.name}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Label
-                    htmlFor="abtest"
-                    className="text-sm font-normal text-muted-foreground"
-                  >
-                    A/B test this email
-                  </Label>
-                  <Switch
-                    id="abtest"
-                    checked={active.abTest ?? false}
-                    onCheckedChange={(v) => onUpdateStep(active.id, { abTest: v })}
-                  />
-                </div>
+              <div className="flex items-center gap-2 rounded-xl border bg-card px-4 py-3 font-medium text-foreground shadow-sm">
+                <Mail className="size-4 text-muted-foreground" />
+                {active.name}
               </div>
 
               {/* Compose card */}

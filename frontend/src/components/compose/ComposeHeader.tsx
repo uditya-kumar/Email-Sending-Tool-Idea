@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, CheckCircle2, Rocket } from "lucide-react"
+import { ArrowLeft, ArrowRight, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { ComposeStep, Lead } from "@/lib/types"
@@ -96,11 +96,6 @@ export function ComposeHeader({
             </button>
           )
         })}
-        {isPreview && (
-          <span className="ml-auto flex items-center gap-1.5 py-1.5 text-xs text-muted-foreground">
-            <Rocket className="size-3.5" /> Launch this recipient below
-          </span>
-        )}
       </nav>
     </header>
   )

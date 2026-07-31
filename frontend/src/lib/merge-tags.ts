@@ -54,15 +54,35 @@ function valueForKey(key: string, lead: Lead): string {
 }
 
 /**
+ * Prepare a substituted value for injection into HTML: escape it (values are
+ * free-text lead data, not markup) and keep the author's line breaks, which
+ * matter because the personalization line can span several lines.
+ */
+function toHtmlValue(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\r\n|\r|\n/g, "<br>")
+}
+
+/**
  * Substitute all merge tags in `text` with values from `lead`,
  * falling back to the tag's fallback (or the attribute label) when empty.
+ *
+ * Pass `{ html: true }` when the result is injected as HTML (the email body) so
+ * substituted values get escaped and their newlines become `<br>`. Leave it off
+ * for plain-text contexts like the subject line.
  */
-export function renderTags(text: string, lead: Lead): string {
+export function renderTags(
+  text: string,
+  lead: Lead,
+  { html = false }: { html?: boolean } = {}
+): string {
   return text.replace(TAG_RE, (_m, key: string, fallback?: string) => {
-    const value = valueForKey(key, lead)
-    if (value) return value
-    if (fallback) return fallback
-    return ATTRIBUTE_LABELS[key as MergeAttributeKey] ?? key
+    const resolved = valueForKey(key, lead) || fallback ||
+      ATTRIBUTE_LABELS[key as MergeAttributeKey] || key
+    return html ? toHtmlValue(resolved) : resolved
   })
 }
 

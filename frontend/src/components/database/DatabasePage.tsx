@@ -112,7 +112,10 @@ export function DatabasePage({ leads, onChange, onSend }: DatabasePageProps) {
   }
 
   return (
-    <div className="w-full px-6 py-6">
+    // Fixed-height column: heading + toolbar stay put and only the table body
+    // scrolls, so the page chrome and column headers never scroll away as rows
+    // are added.
+    <div className="flex min-h-0 w-full flex-1 flex-col px-6 py-6">
       <div className="mb-4">
         <h1 className="text-xl font-semibold text-foreground">Database</h1>
         <p className="text-sm text-muted-foreground">
@@ -168,12 +171,12 @@ export function DatabasePage({ leads, onChange, onSend }: DatabasePageProps) {
         </div>
       </div>
 
-      {/* Table (horizontally scrollable; Actions column stays pinned) */}
-      <div className="overflow-hidden rounded-xl border bg-card">
-        <Table>
-          <TableHeader>
+      {/* Table (scrolls both ways; header row and Actions column stay pinned) */}
+      <div className="min-h-0 flex-1 overflow-hidden rounded-xl border bg-card">
+        <Table containerClassName="h-full overflow-y-auto">
+          <TableHeader className="sticky top-0 z-20">
             {table.getHeaderGroups().map((hg) => (
-              <TableRow key={hg.id} className="bg-muted/60 hover:bg-muted/60">
+              <TableRow key={hg.id} className="pinned-head">
                 {hg.headers.map((header) => {
                   const meta = header.column.columnDef.meta
                   return (
@@ -183,8 +186,9 @@ export function DatabasePage({ leads, onChange, onSend }: DatabasePageProps) {
                       style={meta?.minWidth ? { minWidth: meta.minWidth } : undefined}
                       className={cn(
                         header.column.getCanSort() && "cursor-pointer select-none",
-                        meta?.sticky &&
-                          "sticky right-0 z-10 bg-muted/60 shadow-[-8px_0_8px_-6px_rgba(0,0,0,0.12)]"
+                        // z-30 so the pinned corner cell sits above both the
+                        // sticky header row (z-20) and the pinned column (z-10).
+                        meta?.sticky && "pinned-col sticky right-0 z-30"
                       )}
                     >
                       {flexRender(header.column.columnDef.header, header.getContext())}
@@ -205,8 +209,7 @@ export function DatabasePage({ leads, onChange, onSend }: DatabasePageProps) {
                         key={cell.id}
                         style={meta?.minWidth ? { minWidth: meta.minWidth } : undefined}
                         className={cn(
-                          meta?.sticky &&
-                            "sticky right-0 z-10 bg-card shadow-[-8px_0_8px_-6px_rgba(0,0,0,0.12)] group-hover:bg-muted/50"
+                          meta?.sticky && "pinned-cell sticky right-0 z-10"
                         )}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}

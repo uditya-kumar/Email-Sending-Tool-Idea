@@ -124,7 +124,6 @@ export function newSequenceForLead(leadId: string): SequenceStep[] {
       name: "Opening email",
       subject: 'Interested in building with {{company:"Company"}}',
       bodyHtml: OPENING_BODY,
-      abTest: false,
     },
     { id: `${leadId}-s2`, kind: "delay", name: "Wait", waitDays: 3 },
     {
@@ -133,7 +132,6 @@ export function newSequenceForLead(leadId: string): SequenceStep[] {
       name: "Follow-up #1",
       subject: "",
       bodyHtml: "",
-      abTest: false,
     },
     { id: `${leadId}-s4`, kind: "delay", name: "Wait", waitDays: 3 },
     {
@@ -142,7 +140,6 @@ export function newSequenceForLead(leadId: string): SequenceStep[] {
       name: "Follow-up #2",
       subject: "",
       bodyHtml: "",
-      abTest: false,
     },
   ]
 }
@@ -168,7 +165,6 @@ export function newTemplate(id: string): EmailTemplate {
         name: "Opening email",
         subject: "",
         bodyHtml: "",
-        abTest: false,
       },
     ],
   }

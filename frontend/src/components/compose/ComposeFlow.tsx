@@ -98,7 +98,6 @@ export function ComposeFlow({
           onSelectStep={setActiveStepId}
           onUpdateStep={(id, patch) => onStepsChange(patchStep(steps, id, patch))}
           onAddStep={addStep}
-          onGenerate={() => toast.info("AI sequence generation is coming soon.")}
           onDuplicateStep={(id) => onStepsChange(duplicateEmailStep(steps, id))}
           onDeleteStep={deleteStep}
           onChangeDelay={(id, days) => onStepsChange(setDelayDays(steps, id, days))}
