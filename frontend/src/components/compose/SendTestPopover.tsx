@@ -10,6 +10,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { ApiError, sendTest } from "@/lib/api"
+import { isPersistedStepId } from "@/lib/sequences"
 
 interface SendTestPopoverProps {
   /**
@@ -67,9 +68,15 @@ export function SendTestPopover({
   async function handleSend() {
     if (!connected || !valid || busy) return
 
-    if (!stepId) {
+    /*
+     * A missing id and a placeholder id are the same problem: the server resolves
+     * the step by id, so neither can be sent. Checked rather than trusted because a
+     * placeholder is *present*, and would otherwise reach the server as a 400 on a
+     * uuid parse — a worse message for the same cause.
+     */
+    if (!stepId || !isPersistedStepId(stepId)) {
       toast.error("Nothing to send yet", {
-        description: "This email hasn't been saved. Make an edit and try again.",
+        description: "This email hasn't saved yet. Give it a moment and try again.",
       })
       return
     }

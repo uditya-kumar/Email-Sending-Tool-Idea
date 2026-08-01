@@ -27,6 +27,16 @@ interface SequenceSidebarProps {
   onDuplicateStep: (id: string) => void
   onDeleteStep: (id: string) => void
   onChangeDelay: (id: string, waitDays: number) => void
+  /**
+   * True while a structural save is in flight.
+   *
+   * Only the buttons that *change the list* are disabled — selecting a step still
+   * works, and blocking that would be gratuitous. The reason the others can't wait
+   * their turn: each one sends the whole list in one statement, computed from the
+   * positions currently on screen. A second click before the first save's read-back
+   * lands would compute from stale positions and race the write that's already out.
+   */
+  busy?: boolean | undefined
 }
 
 /** Left rail on the Content step: ordered email + wait cards. */
@@ -38,6 +48,7 @@ export function SequenceSidebar({
   onDuplicateStep,
   onDeleteStep,
   onChangeDelay,
+  busy,
 }: SequenceSidebarProps) {
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r bg-background">
@@ -53,11 +64,13 @@ export function SequenceSidebar({
                   onClick={() => onSelect(step.id)}
                   onDuplicate={() => onDuplicateStep(step.id)}
                   onDelete={() => onDeleteStep(step.id)}
+                  busy={busy}
                 />
               ) : (
                 <DelayCard
                   step={step}
                   onChange={(days) => onChangeDelay(step.id, days)}
+                  busy={busy}
                 />
               )}
               {!isLast && <StepConnector />}
@@ -68,6 +81,7 @@ export function SequenceSidebar({
         <Button
           variant="outline"
           className="mt-2 w-full justify-center gap-1.5 border-dashed"
+          disabled={busy}
           onClick={onAddStep}
         >
           <Plus className="size-4" /> Add step
@@ -87,12 +101,14 @@ function EmailCard({
   onClick,
   onDuplicate,
   onDelete,
+  busy,
 }: {
   step: SequenceStep
   active: boolean
   onClick: () => void
   onDuplicate: () => void
   onDelete: () => void
+  busy?: boolean | undefined
 }) {
   const missing = !step.subject && !step.bodyHtml
   return (
@@ -141,6 +157,9 @@ function EmailCard({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-40">
           <DropdownMenuItem
+            // `?? false` because Radix types this as a required boolean, and
+            // `exactOptionalPropertyTypes` won't let an optional prop through.
+            disabled={busy ?? false}
             onSelect={onDuplicate}
             onClick={(e) => e.stopPropagation()}
           >
@@ -148,6 +167,9 @@ function EmailCard({
           </DropdownMenuItem>
           <DropdownMenuItem
             variant="destructive"
+            // `?? false` because Radix types this as a required boolean, and
+            // `exactOptionalPropertyTypes` won't let an optional prop through.
+            disabled={busy ?? false}
             onSelect={onDelete}
             onClick={(e) => e.stopPropagation()}
           >
@@ -162,9 +184,11 @@ function EmailCard({
 function DelayCard({
   step,
   onChange,
+  busy,
 }: {
   step: SequenceStep
   onChange: (days: number) => void
+  busy?: boolean | undefined
 }) {
   const [open, setOpen] = useState(false)
   const days = step.waitDays ?? 3
@@ -193,7 +217,7 @@ function DelayCard({
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Decrease days"
-                disabled={days <= 1}
+                disabled={busy || days <= 1}
                 onClick={() => onChange(Math.max(1, days - 1))}
               >
                 <Minus />
@@ -205,6 +229,7 @@ function DelayCard({
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Increase days"
+                disabled={busy}
                 onClick={() => onChange(days + 1)}
               >
                 <Plus />

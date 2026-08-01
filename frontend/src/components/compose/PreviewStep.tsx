@@ -1,4 +1,4 @@
-import { Clock, Mail, Rocket } from "lucide-react"
+import { Clock, Loader2, Mail, Rocket } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -37,6 +37,8 @@ interface PreviewStepProps {
   /** This recipient's own sequence (emails + waits). */
   steps: SequenceStep[]
   onLaunch: () => void
+  /** True while the launch request is in flight — this one sends real email. */
+  launching?: boolean | undefined
 }
 
 function initials(name: string) {
@@ -53,7 +55,7 @@ function initials(name: string) {
  * Compose step 2 — the fully rendered emails for ONE recipient, plus the Launch
  * button. Launch lives only here, so nothing goes out unpreviewed.
  */
-export function PreviewStep({ lead, steps, onLaunch }: PreviewStepProps) {
+export function PreviewStep({ lead, steps, onLaunch, launching }: PreviewStepProps) {
   const emails = steps.filter((s) => s.kind === "email")
   const written = emails.filter((s) => s.subject || s.bodyHtml)
   const canLaunch = written.length > 0
@@ -155,14 +157,25 @@ export function PreviewStep({ lead, steps, onLaunch }: PreviewStepProps) {
 
         {/* Launch — the only place a send can be started. */}
         <div className="sticky bottom-0 border-t bg-background p-4">
+          {/* Disabled while in flight: this queues a real email, and a second
+              click would ask the server to launch the same lead twice. It answers
+              idempotently, but the toast would still read as a fresh send. */}
           <Button
             className="w-full gap-1.5"
             size="lg"
-            disabled={!canLaunch}
+            disabled={!canLaunch || launching}
             onClick={onLaunch}
           >
-            <Rocket className="size-4" />
-            {lead.status === "draft" ? "Launch" : "Reschedule"}
+            {launching ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Rocket className="size-4" />
+            )}
+            {launching
+              ? "Launching…"
+              : lead.status === "draft"
+                ? "Launch"
+                : "Reschedule"}
           </Button>
           <p className="mt-2 text-center text-xs text-muted-foreground">
             {canLaunch

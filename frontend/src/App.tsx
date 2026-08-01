@@ -12,25 +12,39 @@ import { SenderLimitDialog } from "@/components/settings/SenderLimitDialog"
 import { ProfileDialog } from "@/components/settings/ProfileDialog"
 import { useAuth, signOut } from "@/lib/auth"
 import { setDailyLimit, useSenders } from "@/lib/accounts"
-import { ApiError, disconnectAccount, googleConsentUrl } from "@/lib/api"
+import {
+  ApiError,
+  cancelLead,
+  disconnectAccount,
+  googleConsentUrl,
+  launchLead as launchLeadRequest,
+} from "@/lib/api"
 import { consumeOAuthReturn } from "@/lib/oauth-return"
 import { fullName } from "@/lib/leads"
-import { newSequenceForLead } from "@/lib/mock-data"
+import { newSequenceForLead } from "@/lib/sequence"
 import { useLeads } from "@/lib/use-leads"
+import { useSequences } from "@/lib/use-sequences"
 import { useSettings } from "@/lib/settings"
 import { formatIST } from "@/lib/time"
 import { useTemplates } from "@/lib/use-templates"
-import type {
-  AppView,
-  Lead,
-  SenderAccount,
-  SequencesByLead,
-  UserProfile,
-} from "@/lib/types"
+import type { AppView, Lead, SenderAccount, UserProfile } from "@/lib/types"
 
 /** Which nav page a view belongs to (compose is reached from Database). */
 function navOrigin(view: AppView): NavView {
   return view === "templates" ? "templates" : "database"
+}
+
+/**
+ * The server's message, verbatim where there is one.
+ *
+ * Every 409 from the launch and cancel paths is written to be read by the user
+ * ("The opening email has no subject.", "Connect a Gmail account in Settings
+ * first.") and carries a stable `code`. Rewording them here would only make them
+ * vaguer.
+ */
+function describeApiError(error: unknown): string {
+  if (error instanceof ApiError || error instanceof Error) return error.message
+  return "Please try again."
 }
 
 /**
@@ -83,15 +97,6 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
   const [composingId, setComposingId] = useState<string | null>(null)
 
   /**
-   * Per-recipient sequences, keyed by lead id.
-   *
-   * Still in memory: `sequence_steps` is the next slice. A lead's sequence is
-   * created lazily by `openCompose` rather than seeded for every lead on load —
-   * with real leads arriving asynchronously there is no one moment to seed at, and
-   * a recipient nobody has composed for doesn't need a copy yet.
-   */
-  const [sequences, setSequences] = useState<SequencesByLead>({})
-  /**
    * Who's logged in. Seeded from the real session rather than mock data, and
    * held in state because the Profile dialog can edit the display name.
    */
@@ -114,6 +119,12 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
     toast.error("Couldn't save that change", { description: message })
   )
   const leads = leadsStore.leads
+
+  /** Per-recipient sequences, read from `sequence_steps` under RLS. */
+  const sequencesStore = useSequences((message) =>
+    toast.error("Couldn't save the sequence", { description: message })
+  )
+  const sequences = sequencesStore.sequences
 
   /** The connected Gmail, read from `gmail_accounts_public` under RLS. */
   const { senders, refresh: refreshSenders } = useSenders()
@@ -179,6 +190,18 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
     }
   }, [leadsError])
 
+  /*
+   * A failed sequences read has to be loud too: compose would show an empty
+   * sequence, `openCompose` would treat that as "this lead has none" and write a
+   * fresh one over the top — turning a read failure into lost email content.
+   */
+  const sequencesError = sequencesStore.error
+  useEffect(() => {
+    if (sequencesError) {
+      toast.error("Couldn't load your sequences", { description: sequencesError })
+    }
+  }, [sequencesError])
+
   /** Persist the tracking + weekday settings. */
   async function saveSettings() {
     setSavingSettings(true)
@@ -211,12 +234,25 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
 
   const composingLead = leads.find((l) => l.id === composingId) ?? null
 
-  /** Open the per-recipient Content → Preview → Launch flow. */
+  /**
+   * Open the per-recipient Content → Preview → Launch flow.
+   *
+   * A lead with no sequence gets one created *in the database* now, rather than
+   * only in state. Launch re-reads `sequence_steps` server-side and 409s with
+   * `no_sequence` on an empty result, so an in-memory-only sequence would look
+   * complete on screen and refuse to launch. Navigation isn't awaited — the flow
+   * opens immediately and the rows land behind it.
+   */
   function openCompose(lead: Lead) {
-    // Leads added or imported after mount have no sequence yet — create one.
-    setSequences((prev) =>
-      prev[lead.id] ? prev : { ...prev, [lead.id]: newSequenceForLead(lead.id) }
-    )
+    /*
+     * Guarded on the read having succeeded. If `sequence_steps` failed to load,
+     * every lead looks like it has no sequence — and seeding one here would write a
+     * blank opening email over content that exists in the database. Better to open
+     * an empty flow behind the error toast than to destroy the email.
+     */
+    if (!sequences[lead.id] && !sequencesStore.loading && !sequencesStore.error) {
+      void sequencesStore.setSteps(lead.id, newSequenceForLead(lead.id))
+    }
     setComposingId(lead.id)
     setView("compose")
   }
@@ -226,23 +262,70 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
     setView("database")
   }
 
-  /** Pull a scheduled recipient back to draft so they can be edited again. */
-  function cancelSchedule(lead: Lead) {
-    leadsStore.patchStatus(lead.id, "draft")
-    toast.success(`Schedule cancelled for ${fullName(lead) || lead.email}`, {
-      description: "They're back to draft — nothing will send until you launch again.",
-    })
+  /**
+   * Cancel a recipient's pending sends.
+   *
+   * The resulting status comes from the server rather than being assumed to be
+   * `draft`: a lead whose opening email is already delivered comes back `sent`, and
+   * showing it as a draft would invite a relaunch that the idempotency index then
+   * silently refuses.
+   */
+  async function cancelSchedule(lead: Lead) {
+    const who = fullName(lead) || lead.email
+
+    try {
+      const result = await cancelLead(lead.id)
+      leadsStore.adoptStatus(lead.id, result.status)
+
+      toast.success(`Schedule cancelled for ${who}`, {
+        description:
+          result.status === "sent"
+            ? `${result.cancelled} pending follow-up${
+                result.cancelled === 1 ? "" : "s"
+              } cancelled. The emails already sent can't be recalled.`
+            : "They're back to draft — nothing will send until you launch again.",
+      })
+    } catch (error) {
+      toast.error(`Couldn't cancel ${who}`, { description: describeApiError(error) })
+    }
   }
 
-  function launchLead(lead: Lead) {
-    leadsStore.patchStatus(lead.id, "scheduled")
-    toast.success(`Scheduled for ${fullName(lead) || lead.email}`, {
-      // formatIST already appends "IST" — don't add a second one.
-      description: `Sends at ${formatIST(lead.sendTimeIST)} from ${
-        senders[0]?.email ?? "your Gmail account"
-      }.`,
-    })
-    backToDatabase()
+  /**
+   * Queue a recipient's opening email.
+   *
+   * Content is flushed first: the server renders the row it reads from
+   * `sequence_steps`, so an unflushed edit would be missing from the email that
+   * actually goes out. Everything the server can refuse — no sequence, empty
+   * subject or body, no connected account, already replied — comes back as a 409
+   * with a message written to be shown as-is, which is why the failure path doesn't
+   * reword it. The flow stays open on failure so it can be fixed.
+   */
+  async function launchLead(lead: Lead) {
+    const who = fullName(lead) || lead.email
+
+    await sequencesStore.flush()
+
+    try {
+      const result = await launchLeadRequest(lead.id)
+      leadsStore.adoptStatus(lead.id, "scheduled")
+
+      if (result.alreadyQueued) {
+        toast.info(`${who} was already scheduled`, {
+          description: `Sending at ${formatIST(lead.sendTimeIST)} — nothing new was queued.`,
+        })
+      } else {
+        toast.success(`Scheduled for ${who}`, {
+          // formatIST already appends "IST" — don't add a second one.
+          description: `Sends at ${formatIST(lead.sendTimeIST)} from ${
+            result.from ?? senders[0]?.email ?? "your Gmail account"
+          }.`,
+        })
+      }
+
+      backToDatabase()
+    } catch (error) {
+      toast.error(`Couldn't launch ${who}`, { description: describeApiError(error) })
+    }
   }
 
   const editingSender = senders.find((s) => s.id === editingSenderId) ?? null
@@ -322,7 +405,8 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
           <DatabasePage
             store={leadsStore}
             onSend={openCompose}
-            onCancelSchedule={cancelSchedule}
+            onCancelSchedule={(lead) => void cancelSchedule(lead)}
+            onLeadDeleted={sequencesStore.forget}
           />
         )}
 
@@ -332,12 +416,16 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
             lead={composingLead}
             steps={sequences[composingLead.id] ?? []}
             onStepsChange={(steps) =>
-              setSequences((prev) => ({ ...prev, [composingLead.id]: steps }))
+              sequencesStore.setSteps(composingLead.id, steps)
+            }
+            onEditStep={(stepId, patch) =>
+              sequencesStore.editStep(composingLead.id, stepId, patch)
             }
             templates={templates}
             onChangeSendTime={(hhmm) => leadsStore.setSendTime(composingLead.id, hhmm)}
             onLaunch={() => launchLead(composingLead)}
             onBack={backToDatabase}
+            onFlush={sequencesStore.flush}
             senderEmail={senders[0]?.email}
           />
         )}

@@ -324,8 +324,11 @@ every optional field needs conditional-spread form. Know this before Phase 5.
         default. And `created_at` defaults to `now()`, the **statement** timestamp, so all rows of a
         bulk insert share it to the microsecond and `order("created_at")` alone let the table
         reshuffle between reloads; `email` is now the tiebreaker.
-      - `status` is still local-only (`patchStatus`). It's the scheduler's column and the launch
-        route isn't wired up, so writing `scheduled` here would claim a send nobody queued.
+      - `status` is never written from the browser — it's the scheduler's column. Was `patchStatus`
+        while the launch route was unwired; now `adoptStatus`, which only ever catches local state up
+        to a status `/launch` or `/cancel` has already returned. The rename is the point: the old name
+        read like a setter, and a `scheduled` written here with nothing queued behind it would be a lie
+        that survives a reload.
 - [x] `templates` + `template_steps` → `TemplatesPage`. Landed **out of order**, with Phase 6, because
       test-send renders the stored row: without persistence there is no UUID to send and nothing to
       render. `lib/templates.ts` (queries) + `lib/use-templates.ts` (store).
@@ -340,9 +343,43 @@ every optional field needs conditional-spread form. Know this before Phase 5.
         it with an effect — templates arrive async and `setSteps` invalidates every step id, so both
         cases resolve for free rather than each needing a corrective effect that renders one wrong
         frame first.
-- [ ] `sequence_steps` per lead → `ComposeFlow` (keyed by `lead_id`; every lead owns its own copy)
-- [ ] Move `newSequenceForLead`, `stepsFromTemplate`, `newTemplate` into `shared/`, then delete `mock-data.ts`
-- [ ] `LeadStatus` gains `sending | replied | failed | cancelled` in `shared/types.ts` + `StatusBadge`
+- [x] `sequence_steps` per lead → `ComposeFlow` (keyed by `lead_id`; every lead owns its own copy).
+      `lib/sequences.ts` (queries) + `lib/use-sequences.ts` (store), mirroring the two write schedules
+      above. Launch and cancel now call the real routes instead of setting status locally.
+      - **Deliberately not `templates.ts`'s delete-then-insert, despite identical columns.** Two tables
+        point at these rows: `sends.step_id` is `on delete set null` and `step_attachments.step_id`
+        cascades. Re-inserting with fresh ids would detach a queued send from its step and silently
+        drop every attachment of a scheduled email. So writes here **preserve ids**.
+      - That forced knowing exactly what `sequence_steps_position_key`
+        (`unique (lead_id, position) deferrable initially deferred`) actually permits, which I probed
+        against the live database: **PostgREST autocommits every statement**, so there is no
+        transaction to defer the check to. A *partial* position write raises 23505; a *whole-list*
+        write in one statement succeeds, because the deferred check tolerates a transient collision
+        within one statement. Hence `saveSequence` = delete-the-gone-rows → upsert the whole list →
+        read back, in that order. Deleting first is what frees the positions a renumber moves into.
+      - Conflict on the **primary key**, never on `(lead_id, position)`: a deferrable constraint cannot
+        back an `ON CONFLICT` clause (42P10). `schema.sql:192` anticipates this.
+      - My own SQL probe produced a **false OK** and had to be re-run. Inside a `DO` block everything
+        is one transaction, so the deferred constraint isn't checked until commit and the cleanup
+        `delete` erased the violation before it could fire. `set constraints all immediate` reproduced
+        PostgREST's per-statement behaviour and inverted the conclusion — which is what fixed the
+        statement order. A probe that agrees with you is worth re-running.
+      - `isPersistedStepId` makes the placeholder-vs-UUID distinction explicit rather than
+        conventional, because three paths depend on it: the upsert, the debounced content save (skips
+        unsaved steps), and the test-send guard — where a placeholder is *present*, so `!stepId` alone
+        would have let it through to a 400 on a uuid parse.
+      - **`ContentStep` never passed `stepId`/`leadId` to `SendTestPopover`**, so the compose-flow test
+        send had never worked at all. Now wired, with `onBeforeSend={onFlush}`.
+      - Launch/cancel adopt the status the **server** returns rather than assuming one: `/cancel`
+        answers `sent` — not `draft` — for a lead whose opening email already went out.
+- [x] Move `newSequenceForLead`, `stepsFromTemplate`, `newTemplate` into `shared/`, then delete `mock-data.ts`.
+      `newTemplate` became `newTemplateSteps` (a template's row is created by `createTemplate`, so only
+      its steps needed a factory) and `use-templates.ts`'s local `blankSteps` collapsed into it.
+      `mock-data.ts` is gone — grepped first; every remaining export was dead.
+- [x] `LeadStatus` gains `sending | replied | failed | cancelled` — **already done and never ticked.**
+      `LeadStatus = Enums<"lead_status">`, so it tracks the database enum, and `StatusBadge.tsx` maps
+      all 7 states under `satisfies Record<LeadStatus, unknown>` — which is what makes a future enum
+      value a compile error rather than a blank badge.
 - [x] **Verify:** driven in a real browser against the live project, every claim checked against SQL and
       the network log rather than what the UI drew — dialog create (lowercased, real UUID), an invalid
       address rejected client-side with the dialog held open so the typing survives, a duplicate
@@ -355,6 +392,33 @@ every optional field needs conditional-spread form. Know this before Phase 5.
         DOM value without firing React's `onChange` for `<input type="time">` and for clearing a text
         input, so neither produced a request. Real `press_key` gestures were needed. Worth knowing —
         a green browser check that issued no network call is not a check.
+- [x] **Verify (`sequence_steps` slice):** driven in a real browser against the live project on a fresh
+      lead, every claim checked against SQL and the network log. Opening compose seeded 5 rows with real
+      UUIDs at positions 0–4; typing a subject and a Tiptap body produced two `PATCH 204`s against the
+      *same* ids; deleting the middle email step renumbered `3→1` and `4→2` — both onto positions that
+      were occupied before the delete — with **no 23505 and every surviving id unchanged**, which is the
+      whole point of the delete-first ordering; Add step appended two rows and left the three existing
+      ids alone; test-send from compose delivered `[TEST] Quick idea for Northwind Labs`, i.e. the
+      per-lead merge data really resolved; Preview rendered `Hi Priya, I noticed your team's move to
+      same-day dispatch`; Launch wrote one `pending` send with the real `step_id` and flipped the lead
+      to `scheduled`; Cancel set it `cancelled` and the lead back to `draft`; applying a template
+      replaced the list with a fresh UUID (not the template's own step id); deleting the lead cascaded
+      `sequence_steps` and `sends` to zero. Hard reload mid-run showed the saved content and did **not**
+      reseed. Zero console errors across the whole run.
+      - **One real bug, found only by driving it — a `23502` on `id`.** PostgREST derives ONE column
+        list for a whole batch and sets that key to **null** in any row that omitted it; the column
+        default is never consulted. So omitting `id` for new steps worked for the seed (no row had one)
+        and broke the instant a list mixed saved and new steps — which is every Add step after the
+        first. Fixed by minting the UUID client-side with `crypto.randomUUID()` so every row in the
+        batch carries one. Splitting the write in two would also fix it, at the cost of the single
+        statement the deferred `(lead_id, position)` constraint needs to tolerate a reorder.
+      - `ContentStep`'s `busy` prop was documented but never threaded through. Now gates Add step,
+        Duplicate, Delete, the wait-day steppers and Use template — each sends the whole list computed
+        from the positions on screen, so a second click before the read-back races the write in flight.
+      - **Still unverified, and needs a second email address (yours is the sender):** anything that
+        requires a real delivery on a schedule — Phase 8 timing, Phase 9's same-thread follow-up, Phase
+        10's reply-cancels-follow-ups. `reply-watcher.ts` decides a message is a reply by `From` ≠ the
+        connected account, so a self-send makes reply detection meaningless by construction.
 
 ## Phase 5 — Google OAuth connect
 *Server done; the Google Cloud project and the frontend button are still open.*

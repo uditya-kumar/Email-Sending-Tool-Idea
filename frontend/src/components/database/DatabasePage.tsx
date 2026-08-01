@@ -38,8 +38,13 @@ interface DatabasePageProps {
   store: LeadsStore
   /** Opens the per-recipient compose flow (Content → Preview → Launch). */
   onSend: (lead: Lead) => void
-  /** Un-schedules a launched recipient, returning them to draft. */
+  /** Cancels a launched recipient's pending sends. */
   onCancelSchedule: (lead: Lead) => void
+  /**
+   * A lead's rows are gone. `sequence_steps` cascades in Postgres, so this exists
+   * to drop the now-orphaned sequence from memory rather than to delete anything.
+   */
+  onLeadDeleted: (id: string) => void
 }
 
 /**
@@ -82,7 +87,12 @@ function reportRejected(rejected: RejectedRow[]) {
  * The app's first page — the recipient database. Every row has its own Send
  * button, which is how per-recipient personalization starts.
  */
-export function DatabasePage({ store, onSend, onCancelSchedule }: DatabasePageProps) {
+export function DatabasePage({
+  store,
+  onSend,
+  onCancelSchedule,
+  onLeadDeleted,
+}: DatabasePageProps) {
   const { leads } = store
   const [globalFilter, setGlobalFilter] = useState("")
   const [sorting, setSorting] = useState<SortingState>([])
@@ -132,7 +142,9 @@ export function DatabasePage({ store, onSend, onCancelSchedule }: DatabasePagePr
      */
     meta: {
       onEditTime: store.setSendTime,
-      onDelete: (id) => void store.remove(id),
+      // Only forget the sequence if the row actually went — see `remove`'s note.
+      onDelete: (id) =>
+        void store.remove(id).then((deleted) => deleted && onLeadDeleted(id)),
       onEdit: (lead) => {
         setEditingLead(lead)
         setDialogOpen(true)

@@ -15,17 +15,23 @@ interface ApplyTemplateMenuProps {
   templates: EmailTemplate[]
   /** Replaces this recipient's whole sequence with the template's steps. */
   onApply: (template: EmailTemplate) => void
+  /** True while a structural save is in flight — this is one of those saves. */
+  busy?: boolean | undefined
 }
 
 /**
  * Content-step picker: choosing a template fills the entire setup for this
  * recipient — every email, follow-up and wait, exactly as saved.
  */
-export function ApplyTemplateMenu({ templates, onApply }: ApplyTemplateMenuProps) {
+export function ApplyTemplateMenu({
+  templates,
+  onApply,
+  busy,
+}: ApplyTemplateMenuProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-1.5">
+        <Button variant="outline" size="sm" className="gap-1.5" disabled={busy}>
           <LayoutTemplate className="size-4" /> Use template
         </Button>
       </DropdownMenuTrigger>

@@ -25,6 +25,15 @@ interface ContentStepProps {
   onDeleteStep: (id: string) => void
   onChangeDelay: (id: string, waitDays: number) => void
   onChangeSendTime: (hhmm: string) => void
+  /**
+   * Flush pending content edits. Awaited before a test send, because the server
+   * renders the stored row and ignores the request body.
+   */
+  onFlush: () => Promise<void>
+  /** Whose merge data the test send renders against. */
+  leadId: string
+  /** True while a structural save is in flight — the sequence rail is read-only then. */
+  busy?: boolean | undefined
   /** Connected Gmail address — the test send needs one to send from. */
   senderEmail?: string | undefined
 }
@@ -43,6 +52,9 @@ export function ContentStep({
   onDeleteStep,
   onChangeDelay,
   onChangeSendTime,
+  onFlush,
+  leadId,
+  busy,
   senderEmail,
 }: ContentStepProps) {
   const active = steps.find((s) => s.id === activeStepId && s.kind === "email")
@@ -58,6 +70,7 @@ export function ContentStep({
         onDuplicateStep={onDuplicateStep}
         onDeleteStep={onDeleteStep}
         onChangeDelay={onChangeDelay}
+        busy={busy}
       />
 
       {/* Dotted canvas */}
@@ -86,7 +99,11 @@ export function ContentStep({
                 value={lead.sendTimeIST}
                 onChange={onChangeSendTime}
               />
-              <ApplyTemplateMenu templates={templates} onApply={onApplyTemplate} />
+              <ApplyTemplateMenu
+                templates={templates}
+                onApply={onApplyTemplate}
+                busy={busy}
+              />
             </div>
           </div>
 
@@ -116,7 +133,20 @@ export function ContentStep({
                     }
                     className="h-8 flex-1 border-0 px-0 text-foreground shadow-none focus-visible:ring-0"
                   />
-                  <SendTestPopover senderEmail={senderEmail} />
+                  {/*
+                    `stepId` is this step's real `sequence_steps` UUID, and
+                    `onBeforeSend` flushes the debounced saves — the server renders
+                    the stored row rather than anything in the request, so without
+                    the flush a test would email the last save instead of what's on
+                    screen. `leadId` is what makes the tags resolve to this
+                    recipient rather than to their fallbacks.
+                  */}
+                  <SendTestPopover
+                    senderEmail={senderEmail}
+                    stepId={active.id}
+                    leadId={leadId}
+                    onBeforeSend={onFlush}
+                  />
                 </div>
 
                 <EmailEditor

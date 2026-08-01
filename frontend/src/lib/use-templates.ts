@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { newTemplateSteps } from "@shared/sequence.ts"
 import type { EmailTemplate, SequenceStep } from "@shared/types.ts"
 import {
   createTemplate,
@@ -44,21 +45,6 @@ export interface TemplatesStore {
   remove: (templateId: string) => Promise<void>
   /** Write any pending debounced edits now. Await before sending. */
   flush: () => Promise<void>
-}
-
-/** A blank template's steps — one opening email, ready to be written. */
-function blankSteps(): SequenceStep[] {
-  return [
-    {
-      // Placeholder only. `replaceSteps` strips it and Postgres assigns a UUID,
-      // which is the id that comes back and gets stored.
-      id: "new",
-      kind: "email",
-      name: "Opening email",
-      subject: "",
-      bodyHtml: "",
-    },
-  ]
 }
 
 export function useTemplates(onError: (message: string) => void): TemplatesStore {
@@ -206,7 +192,11 @@ export function useTemplates(onError: (message: string) => void): TemplatesStore
 
   const add = useCallback(async (): Promise<EmailTemplate | null> => {
     try {
-      const created = await createTemplate("Untitled template", blankSteps())
+      /*
+       * The placeholder ids `newTemplateSteps` generates are stripped by
+       * `replaceSteps`; Postgres assigns the UUIDs that come back and get stored.
+       */
+      const created = await createTemplate("Untitled template", newTemplateSteps("new"))
       setTemplates((prev) => [...prev, created])
       return created
     } catch (cause) {

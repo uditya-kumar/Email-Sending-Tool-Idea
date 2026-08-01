@@ -1,3 +1,4 @@
+import type { LeadStatus } from "@shared/types.ts"
 import { accessToken } from "./supabase"
 
 /**
@@ -144,4 +145,58 @@ export async function disconnectAccount(id: string): Promise<void> {
   await request<{ disconnected: true }>(`/api/accounts/${id}/disconnect`, {
     method: "POST",
   })
+}
+
+export interface LaunchResult {
+  leadId: string
+  /**
+   * True when this step was already queued — a double-clicked Launch, or a
+   * relaunch. Not an error: the server reports the existing schedule rather than
+   * creating a second row, because that would be a duplicate email.
+   */
+  alreadyQueued: boolean
+  /** The real UTC instant the scheduler will send at, not the IST string typed in. */
+  scheduledAt: string
+  /**
+   * The **send** row's status (`pending`, …) — not the lead's, which becomes
+   * `scheduled`. Named loosely on purpose: feeding this to a lead's status field
+   * would be a category error, and `SendStatus` here would invite exactly that.
+   */
+  status: string
+  sendTimeIST?: string
+  from?: string
+}
+
+/**
+ * Queue a lead's opening email.
+ *
+ * The server validates everything that would otherwise fail silently three days
+ * later — already replied, already launched, no sequence, no email step, empty
+ * subject, empty body, no or ambiguous Gmail account — and answers with a 409 and a
+ * stable `code` for each. Those messages are written to be shown as-is.
+ */
+export async function launchLead(leadId: string): Promise<LaunchResult> {
+  return request<LaunchResult>(`/api/leads/${leadId}/launch`, {
+    method: "POST",
+    // No `gmailAccountId`: there is normally one connected account, and the server
+    // answers `ambiguous_account` rather than guessing when there are several.
+    body: {},
+  })
+}
+
+export interface CancelResult {
+  leadId: string
+  /** How many pending sends were cancelled. */
+  cancelled: number
+  /**
+   * Where the **lead** landed — `draft` only if nothing has actually gone out. A
+   * lead whose opening email is already in someone's inbox comes back `sent`,
+   * because showing it as a draft would invite a relaunch the idempotency index
+   * then silently refuses.
+   */
+  status: LeadStatus
+}
+
+export async function cancelLead(leadId: string): Promise<CancelResult> {
+  return request<CancelResult>(`/api/leads/${leadId}/cancel`, { method: "POST" })
 }

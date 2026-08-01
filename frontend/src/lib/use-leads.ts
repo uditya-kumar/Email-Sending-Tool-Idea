@@ -160,13 +160,28 @@ export interface LeadsStore {
   /** Resolves to the saved lead (with its database id), or null if the write failed. */
   create: (lead: NewLead) => Promise<Lead | null>
   update: (id: string, lead: NewLead) => Promise<Lead | null>
-  remove: (id: string) => Promise<void>
+  /**
+   * Delete a lead. Resolves `true` only if the row is actually gone.
+   *
+   * The boolean is load-bearing: the caller drops the lead's cascaded
+   * `sequence_steps` from memory on success, and doing that for a lead that still
+   * exists would make the compose flow treat it as having no sequence and write a
+   * blank one over its real emails.
+   */
+  remove: (id: string) => Promise<boolean>
   /** Inline grid edit — optimistic, written on a debounce. */
   setSendTime: (id: string, sendTimeIST: string) => void
   /** Bulk insert, skipping addresses already present. */
   importLeads: (leads: NewLead[]) => Promise<ImportOutcome | null>
-  /** Local-only status change, until launch/cancel are wired to the server. */
-  patchStatus: (id: string, status: Lead["status"]) => void
+  /**
+   * Adopt a status the **server** has already written.
+   *
+   * Not a way to set one: `leads.status` past `draft` belongs to the scheduler, and
+   * the browser has no business deciding a lead is `sending`. Launch and cancel go
+   * through their routes and pass the status those routes return, so this only ever
+   * catches local state up to a fact.
+   */
+  adoptStatus: (id: string, status: Lead["status"]) => void
   /** Write any pending debounced send-time edits now. */
   flush: () => Promise<void>
 }
@@ -293,15 +308,17 @@ export function useLeads(onError: (message: string) => void): LeadsStore {
     [flush]
   )
 
-  const remove = useCallback(async (id: string) => {
+  const remove = useCallback(async (id: string): Promise<boolean> => {
     // Drop any queued send-time write for this row — the row is about to be gone.
     pending.current.delete(id)
 
     try {
       await deleteLead(id)
       setLeads((prev) => prev.filter((l) => l.id !== id))
+      return true
     } catch (cause) {
       report.current(cause instanceof Error ? cause.message : "Couldn't delete the lead.")
+      return false
     }
   }, [])
 
@@ -364,14 +381,15 @@ export function useLeads(onError: (message: string) => void): LeadsStore {
   )
 
   /**
-   * Launch and cancel still change the badge locally only.
+   * Reflect a status the server has just written.
    *
-   * `status` is the scheduler's column — `POST /api/leads/:id/launch` sets it, and
-   * that call isn't wired up yet (BACKEND_PLAN §10). Until it is, the badge is
-   * honest about the session but resets on reload, which is better than writing a
-   * `scheduled` the server never queued anything for.
+   * Local-only by design, and correct because it is only ever called with a status
+   * that came *back* from `/launch` or `/cancel`. Writing `leads.status` from the
+   * browser is what this avoids: the scheduler owns that column, and a `scheduled`
+   * written here with nothing queued behind it would be a lie that survives a
+   * reload.
    */
-  const patchStatus = useCallback((id: string, status: Lead["status"]) => {
+  const adoptStatus = useCallback((id: string, status: Lead["status"]) => {
     setLeads((prev) => prev.map((l) => (l.id === id ? { ...l, status } : l)))
   }, [])
 
@@ -384,7 +402,7 @@ export function useLeads(onError: (message: string) => void): LeadsStore {
     remove,
     setSendTime,
     importLeads,
-    patchStatus,
+    adoptStatus,
     flush,
   }
 }

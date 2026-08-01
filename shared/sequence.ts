@@ -1,11 +1,75 @@
-import type { SequenceStep } from "./types.ts"
+import type { EmailTemplate, SequenceStep } from "./types.ts"
 
 /**
  * Pure step-list operations shared by the per-recipient compose flow and the
  * Templates page — both edit the same "email → wait → follow-up" shape.
  * `scope` prefixes generated ids (a lead id in compose, a template id in Templates)
  * so ids stay unique across sequences.
+ *
+ * Every id generated here is a **placeholder**, and deliberately not a UUID: the
+ * shape is what tells the persistence layer which steps exist only on screen.
+ * `sends.step_id` and `step_attachments.step_id` reference `sequence_steps(id)`, so
+ * a real row needs a real UUID — the persistence layer replaces each placeholder
+ * with one and returns the saved list. Nothing may be sent from a step whose id
+ * still looks like one of these.
  */
+
+/** The default wait between emails, in days — three, for a cold sequence. */
+const DEFAULT_WAIT_DAYS = 3
+
+/**
+ * A fresh sequence for one recipient: opening → wait → follow-up → wait → follow-up.
+ *
+ * Each lead gets their own copy rather than a reference to a shared template,
+ * because per-recipient personalization is the entire point of the compose flow.
+ * The follow-ups start blank: an empty subject means "send as a reply in this
+ * thread", which is the normal shape of a cold follow-up.
+ */
+export function newSequenceForLead(scope: string): SequenceStep[] {
+  return [
+    {
+      id: `email-${scope}-0`,
+      kind: "email",
+      name: "Opening email",
+      subject: "",
+      bodyHtml: "",
+    },
+    { id: `delay-${scope}-1`, kind: "delay", name: "Wait", waitDays: DEFAULT_WAIT_DAYS },
+    { id: `email-${scope}-2`, kind: "email", name: "Follow-up #1", subject: "", bodyHtml: "" },
+    { id: `delay-${scope}-3`, kind: "delay", name: "Wait", waitDays: DEFAULT_WAIT_DAYS },
+    { id: `email-${scope}-4`, kind: "email", name: "Follow-up #2", subject: "", bodyHtml: "" },
+  ]
+}
+
+/** A blank template: one opening email, ready to be named and written. */
+export function newTemplateSteps(scope: string): SequenceStep[] {
+  return [
+    {
+      id: `email-${scope}-0`,
+      kind: "email",
+      name: "Opening email",
+      subject: "",
+      bodyHtml: "",
+    },
+  ]
+}
+
+/**
+ * Copy a template's steps for one recipient, re-keying every id.
+ *
+ * Re-keying is not cosmetic: these ids are placeholders about to be replaced by
+ * the database, and leaving the template's real `template_steps` UUIDs on them
+ * would make an upsert believe the rows already exist in `sequence_steps`.
+ */
+export function stepsFromTemplate(
+  template: EmailTemplate,
+  scope: string
+): SequenceStep[] {
+  return template.steps.map((step, i) => ({
+    ...step,
+    id: `${step.kind}-${scope}-copy-${i}`,
+  }))
+}
 
 /** Append a wait + a new follow-up email. Returns the list and the new email's id. */
 export function appendFollowUp(
