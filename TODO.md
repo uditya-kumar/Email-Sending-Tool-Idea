@@ -33,17 +33,38 @@ CORS, the IST scheduling math (12 cases), the merge-tag renderer, and the crypto
 with the Gmail API enabled, 5 scopes, an **In production** consent screen and a Web OAuth client.
 The server boots with 15 env vars and answers `/healthz`.
 
-**Phase 3 is done** — login works against the live project. What's left:
+**Phase 3 is done** — login works against the live project.
 
-1. **Phase 4: real CRUD replacing `mock-data.ts`**, smallest slice first (`settings` → `leads` →
-   `templates` → `sequence_steps`). This is the bulk of the remaining work.
-2. **The four places that call the server** — the Connect button, `SendTestPopover`, launch/cancel, and
-   the attach control (`BACKEND_PLAN.md` §10 has the full list).
+**A real email has been sent.** Google OAuth consent completed, `mailuditya@gmail.com` connected
+with all 5 scopes and an encrypted refresh token, and `POST /api/test-send` delivered a `[TEST]`
+email to a real inbox with both merge tags correctly falling back (no lead on the Templates page).
+Confirmed in the database afterwards: `sends: 0`, `events: 0` — a test send stays out of the
+scheduler, consumes no daily cap and creates no queue row, exactly as intended.
 
-The one thing still unproven is the part that matters most — that a real email arrives, that a
-follow-up lands in the same thread, and that a reply cancels it. The fastest way to derisk it is to
-wire the Connect button (Phase 5's frontend half) and fire one `/api/test-send` at your own inbox
-**before** building much else on top of the send path.
+That retires the project's biggest risk: **the send path is proven before anything else is built on
+top of it.** Two things it forced, both now done:
+
+- **Templates persist** (`lib/templates.ts`, `lib/use-templates.ts`). Not scope creep —
+  `/api/test-send` re-reads the step from Postgres and ignores content in the request body, so a
+  test send needs a real `template_steps` UUID, and unsaved editor text would be silently absent
+  from the email. Hence `flush()` before every send.
+- **Senders are real** (`lib/accounts.ts`, via the `gmail_accounts_public` view). `MOCK_SENDERS` and
+  `MOCK_TEMPLATES` are gone; `mock-data.ts` is down to `MOCK_LEADS` and `DEFAULT_SETTINGS`.
+
+What's left:
+
+1. **Phase 4: the remaining CRUD** — `settings` → `leads` (+ CSV import) → per-lead
+   `sequence_steps`, then delete `mock-data.ts`. This is the bulk of the remaining work.
+2. **Launch / cancel and the attach control** — the two server calls still unwired
+   (`BACKEND_PLAN.md` §10). Connect and `SendTestPopover` are done.
+3. **Still unproven, and only provable by a real campaign**: that a follow-up lands in the *same
+   thread*, and that a reply cancels the pending ones. Needs Phase 4's `sequence_steps` plus a
+   launch, since both are scheduler behaviour rather than test-send behaviour.
+
+**Known gap, low priority:** nothing prunes abandoned `oauth_states` rows. A row is burned on a
+successful callback and an expired one is refused, so this is unbounded growth rather than a
+security hole — but an abandoned consent leaves a row forever. Worth a `delete from oauth_states
+where expires_at < now()` in the existing cron tick.
 
 ---
 
@@ -202,18 +223,19 @@ every optional field needs conditional-spread form. Know this before Phase 5.
       a duplicate `(lead_id, step_position)` is rejected → **no double-send**;
       `claim_due_sends` took 1 of 2 rows (skipped the future one), flipped it to `sending`, and a
       second overlapping call claimed 0; `sent_today_count` went 0 → 1 on the IST day boundary
-- [ ] Disable public signups in Supabase Auth — **dashboard only, you must do this**
+- [x] Disable public signups in Supabase Auth — **dashboard only, you must do this**
       (Authentication → Providers → Email → *Enable sign ups* off). This is what enforces "single user".
-- [ ] Create your one user in the Supabase dashboard (Authentication → Users → Add user), **then**
+- [x] Create your one user in the Supabase dashboard (Authentication → Users → Add user), **then**
       re-run the seed at the bottom of `schema.sql` to create your `settings` row —
-      `auth.users` is currently empty, so that insert matched nothing
+      `auth.users` is currently empty, so that insert matched nothing.
+      *Done: 1 user, 1 `settings` row.*
 - [x] Add an npm script `db:types` so regenerating is one command → `server/scripts/gen-db-types.mjs`.
       Reads the project ref out of `SUPABASE_URL` so it isn't duplicated anywhere, writes to
       `shared/`, and refuses to overwrite a working types file if the CLI output doesn't contain
       `export type Database` (it exits 0 while printing diagnostics in some failure modes, and
       clobbering the file would break both packages' builds at once)
 - [x] `server/src/db.ts` → `createClient<Database>(…)`
-- [ ] `frontend/src/lib/supabase.ts` → `createClient<Database>(…)` too
+- [x] `frontend/src/lib/supabase.ts` → `createClient<Database>(…)` too
 - [x] Derive row types instead of hand-writing them — `db.ts` exports `GmailAccountRow`, `LeadRow`,
       `SendRow`, `SequenceStepRow`, `TemplateStepRow`, `SettingsRow`, `AttachmentRow`, `EventRow`
       via `Tables<"…">`, plus `SendInsert` / `SendUpdate` / `EventInsert` / `GmailAccountUpdate`
@@ -279,7 +301,20 @@ every optional field needs conditional-spread form. Know this before Phase 5.
       **Zod-validate parsed CSV rows** — PapaParse hands back `any`, and an invalid email or a
       malformed `send_time_ist` reaching `leads` becomes a failed send much later. Reuse
       `isValidIST()` from `shared/time.ts` inside the schema; report rejected rows to the user.
-- [ ] `templates` + `template_steps` → `TemplatesPage`
+- [x] `templates` + `template_steps` → `TemplatesPage`. Landed **out of order**, with Phase 6, because
+      test-send renders the stored row: without persistence there is no UUID to send and nothing to
+      render. `lib/templates.ts` (queries) + `lib/use-templates.ts` (store).
+      - Two write schedules, not one. **Structural** edits (add/delete/reorder) go through
+        `replaceSteps` immediately, because Postgres assigns the ids the editor then needs;
+        **content** edits are debounced 800 ms and flushed by `flush()` before a send, on `pagehide`,
+        and on unmount.
+      - `replaceSteps` is delete-then-insert, not a diff: a reorder transiently violates the
+        `(template_id, position)` unique constraint, and a template has single digits of steps.
+        Ids are *not* preserved, so the saved list is returned and adopted rather than assumed.
+      - `TemplatesPage` **derives** the effective selection from the current list instead of syncing
+        it with an effect — templates arrive async and `setSteps` invalidates every step id, so both
+        cases resolve for free rather than each needing a corrective effect that renders one wrong
+        frame first.
 - [ ] `sequence_steps` per lead → `ComposeFlow` (keyed by `lead_id`; every lead owns its own copy)
 - [ ] Move `newSequenceForLead`, `stepsFromTemplate`, `newTemplate` into `shared/`, then delete `mock-data.ts`
 - [ ] `LeadStatus` gains `sending | replied | failed | cancelled` in `shared/types.ts` + `StatusBadge`
@@ -307,10 +342,25 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 - [x] `server/src/email/accounts.ts` — `mailerFor(account)`, `replyWatcherFor`, `oauthClientFor`,
       `markNeedsReauth`, `forgetAccount`; per-account cached `OAuth2Client` whose `tokens` event
       persists refreshed access/refresh tokens
-- [ ] Wire the "Add account" button (`SettingsPage.tsx:251`) → `${VITE_SERVER_URL}/api/auth/google?token=…`
-- [ ] Render `status='needs_reauth'` as a Reconnect badge — the server already answers
-      `409 { code: "needs_reauth" }` from every route that touches a dead account
-- [ ] **Verify:** click Connect → consent (click through the unverified-app warning once) → your Gmail shows in Settings with `daily_limit` 15
+- [x] Wire the Connect button → `${VITE_SERVER_URL}/api/auth/google?token=…` (`lib/api.ts`
+      `googleConsentUrl()`). A **full navigation**, not a `fetch`: the server answers with a 302 to
+      Google's consent screen, and a fetch would follow that redirect in the background where the
+      user can't interact with it. Hidden once an account is connected, since both the test-send and
+      launch paths refuse with `ambiguous_account` rather than guessing between several.
+- [x] Handle the return — `lib/oauth-return.ts`. The callback redirects to `/settings?connected=1`,
+      but **this app has no router** (the current page is a `useState<AppView>`), so the query string
+      is read once at module load, turned into an initial view + a toast, and stripped from the URL so
+      a reload doesn't re-announce the connect. Module scope rather than an effect: reading it
+      *consumes* it, and StrictMode double-invokes effects.
+- [x] Read real accounts from the `gmail_accounts_public` **view** (`lib/accounts.ts`), never the
+      `gmail_accounts` table — that holds `refresh_token_enc` and has no RLS policy at all. The daily
+      cap goes through the `set_daily_limit` function since the browser has no UPDATE on it.
+- [x] Wire disconnect → `POST /api/accounts/:id/disconnect`
+- [x] Render `status='needs_reauth'` as a Reconnect prompt — otherwise a revoked token stays
+      invisible until a scheduled send fails hours later
+- [x] **Verified:** Connect → consent (through the unverified-app warning) → `mailuditya@gmail.com`
+      shows in Settings with `daily_limit` 15, `status` active, all 5 scopes and an encrypted refresh
+      token stored.
 
 ## Phase 6 — First real email
 *Server done; needs a connected Gmail (Phase 5) to actually deliver.*
@@ -338,8 +388,15 @@ every optional field needs conditional-spread form. Know this before Phase 5.
       most needs parsing rather than casting. Subject is prefixed `[TEST] `.
       With no `leadId` (the Templates page) it renders against an all-empty placeholder lead, so tags
       fall through to their own fallbacks — which is exactly what the Preview step shows.
-- [ ] Wire `SendTestPopover.tsx:41`
-- [ ] **Verify:** a merge-tagged HTML email with resolved fallbacks lands in your own inbox
+- [x] Wire `SendTestPopover` — was a fake `toast.success`, now calls `sendTest()` and reports the real
+      `{ to, from, subject }` back. Takes `onBeforeSend`, awaited before the request, because the server
+      renders the **stored** row: without the flush a test send silently emails the last debounced save
+      instead of what's on screen. Also guards on `stepId` being a real UUID — a client-invented id
+      (`t1-s1`) can never resolve server-side, so it fails fast with a readable message rather than a 404.
+- [x] **Verified end to end:** `[TEST] Test send from the outreach tool — your team` delivered from
+      `mailuditya@gmail.com`, HTML body intact. The scheduler ticked three times during and after with
+      `claimed: 0, sent: 0` and the database shows `sends: 0` / `events: 0` — proof that the
+      no-cap/no-tracking/no-`sends`-row design of test-send actually holds and can't disturb a campaign.
 
 ## Phase 7 — Resume attachment
 *The frontend has no attach UI at all today — this phase adds it.*
