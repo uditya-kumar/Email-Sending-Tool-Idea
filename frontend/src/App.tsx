@@ -15,7 +15,8 @@ import { setDailyLimit, useSenders } from "@/lib/accounts"
 import { ApiError, disconnectAccount, googleConsentUrl } from "@/lib/api"
 import { consumeOAuthReturn } from "@/lib/oauth-return"
 import { fullName } from "@/lib/leads"
-import { MOCK_LEADS, newSequenceForLead } from "@/lib/mock-data"
+import { newSequenceForLead } from "@/lib/mock-data"
+import { useLeads } from "@/lib/use-leads"
 import { useSettings } from "@/lib/settings"
 import { formatIST } from "@/lib/time"
 import { useTemplates } from "@/lib/use-templates"
@@ -26,11 +27,6 @@ import type {
   SequencesByLead,
   UserProfile,
 } from "@/lib/types"
-
-/** Seed one sequence per lead so every recipient starts with their own copy. */
-function seedSequences(leads: Lead[]): SequencesByLead {
-  return Object.fromEntries(leads.map((l) => [l.id, newSequenceForLead(l.id)]))
-}
 
 /** Which nav page a view belongs to (compose is reached from Database). */
 function navOrigin(view: AppView): NavView {
@@ -86,10 +82,15 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
   /** Which lead's compose flow is open (null on Database/Settings). */
   const [composingId, setComposingId] = useState<string | null>(null)
 
-  const [leads, setLeads] = useState<Lead[]>(MOCK_LEADS)
-  const [sequences, setSequences] = useState<SequencesByLead>(() =>
-    seedSequences(MOCK_LEADS)
-  )
+  /**
+   * Per-recipient sequences, keyed by lead id.
+   *
+   * Still in memory: `sequence_steps` is the next slice. A lead's sequence is
+   * created lazily by `openCompose` rather than seeded for every lead on load —
+   * with real leads arriving asynchronously there is no one moment to seed at, and
+   * a recipient nobody has composed for doesn't need a copy yet.
+   */
+  const [sequences, setSequences] = useState<SequencesByLead>({})
   /**
    * Who's logged in. Seeded from the real session rather than mock data, and
    * held in state because the Profile dialog can edit the display name.
@@ -107,6 +108,12 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
    * debounced — these values gate every future send.
    */
   const settingsStore = useSettings()
+
+  /** The recipient database, read from `leads` under RLS. */
+  const leadsStore = useLeads((message) =>
+    toast.error("Couldn't save that change", { description: message })
+  )
+  const leads = leadsStore.leads
 
   /** The connected Gmail, read from `gmail_accounts_public` under RLS. */
   const { senders, refresh: refreshSenders } = useSenders()
@@ -160,6 +167,18 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
     }
   }, [settingsError])
 
+  /*
+   * A failed leads read is the one that most needs saying: an empty table is
+   * indistinguishable from "you have no recipients", and the natural response to
+   * that is to import the CSV again.
+   */
+  const leadsError = leadsStore.error
+  useEffect(() => {
+    if (leadsError) {
+      toast.error("Couldn't load your recipients", { description: leadsError })
+    }
+  }, [leadsError])
+
   /** Persist the tracking + weekday settings. */
   async function saveSettings() {
     setSavingSettings(true)
@@ -207,20 +226,16 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
     setView("database")
   }
 
-  function patchLead(id: string, patch: Partial<Lead>) {
-    setLeads((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)))
-  }
-
   /** Pull a scheduled recipient back to draft so they can be edited again. */
   function cancelSchedule(lead: Lead) {
-    patchLead(lead.id, { status: "draft" })
+    leadsStore.patchStatus(lead.id, "draft")
     toast.success(`Schedule cancelled for ${fullName(lead) || lead.email}`, {
       description: "They're back to draft — nothing will send until you launch again.",
     })
   }
 
   function launchLead(lead: Lead) {
-    patchLead(lead.id, { status: "scheduled" })
+    leadsStore.patchStatus(lead.id, "scheduled")
     toast.success(`Scheduled for ${fullName(lead) || lead.email}`, {
       // formatIST already appends "IST" — don't add a second one.
       description: `Sends at ${formatIST(lead.sendTimeIST)} from ${
@@ -305,8 +320,7 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
         {/* Database manages its own scrolling (rows scroll, chrome stays put). */}
         {view === "database" && (
           <DatabasePage
-            leads={leads}
-            onChange={setLeads}
+            store={leadsStore}
             onSend={openCompose}
             onCancelSchedule={cancelSchedule}
           />
@@ -321,7 +335,7 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
               setSequences((prev) => ({ ...prev, [composingLead.id]: steps }))
             }
             templates={templates}
-            onLeadChange={(patch) => patchLead(composingLead.id, patch)}
+            onChangeSendTime={(hhmm) => leadsStore.setSendTime(composingLead.id, hhmm)}
             onLaunch={() => launchLead(composingLead)}
             onBack={backToDatabase}
             senderEmail={senders[0]?.email}

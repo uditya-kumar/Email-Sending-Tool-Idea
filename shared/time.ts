@@ -7,6 +7,18 @@ export const IST_ZONE = "Asia/Kolkata"
 export const IST_TIME_FORMAT = "HH:mm"
 
 /**
+ * The exact shape `leads.send_time_ist` accepts — a copy of that column's CHECK
+ * constraint (`^([01][0-9]|2[0-3]):[0-5][0-9]$`).
+ *
+ * Needed because Luxon alone is more permissive than the database: it parses
+ * "24:00" happily, rolling it over to 00:00 the next day, which the CHECK rejects.
+ * Validating with Luxon only would let that value through every form and CSV
+ * import and turn it into a 23514 at insert time — or, worse, a send silently
+ * moved to the following day.
+ */
+const IST_TIME_PATTERN = /^([01][0-9]|2[0-3]):[0-5][0-9]$/
+
+/**
  * Convert an IST "HH:mm" time (on `refDate`) into a UTC ISO string.
  * The scheduler stores and dispatches in UTC.
  */
@@ -24,8 +36,16 @@ export function formatIST(hhmm: string): string {
   return `${dt.toFormat("h:mm a")} IST`
 }
 
-/** Validate a "HH:mm" 24-hour string. */
+/**
+ * Validate a "HH:mm" 24-hour string, to the database's definition of valid.
+ *
+ * Both checks are deliberate: the pattern is what the `send_time_ist` CHECK
+ * constraint enforces (and rules out Luxon's "24:00"), while Luxon rules out
+ * anything the pattern would admit but no clock shows. Anything this accepts can
+ * be inserted; anything it rejects would have failed at the database.
+ */
 export function isValidIST(hhmm: string): boolean {
+  if (!IST_TIME_PATTERN.test(hhmm)) return false
   return DateTime.fromFormat(hhmm, IST_TIME_FORMAT, { zone: IST_ZONE }).isValid
 }
 

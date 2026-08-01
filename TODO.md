@@ -296,11 +296,36 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 ## Phase 4 — Real CRUD, one slice per commit
 *Smallest surface first so the mapper layer is proven before the big tables.*
 
-- [ ] `settings` → `SequenceSettings` / `SettingsPage`
-- [ ] `leads` → `DatabasePage`, `LeadDialog`, CSV import (reuse `lib/csv.ts`).
-      **Zod-validate parsed CSV rows** — PapaParse hands back `any`, and an invalid email or a
-      malformed `send_time_ist` reaching `leads` becomes a failed send much later. Reuse
-      `isValidIST()` from `shared/time.ts` inside the schema; report rejected rows to the user.
+- [x] `settings` → `SequenceSettings` / `SettingsPage`. `lib/settings.ts` (queries + `useSettings`).
+      Saved on an explicit button rather than debounced — these values gate every future send.
+      - The write is an UPDATE of the four columns `sequenceSettingsToRow` projects, **not** an
+        upsert of `AllSettings`: `jitter_*` and `stale_send_grace_hours` are the scheduler's, and
+        writing them back from a page that doesn't edit them would reset a hand-tuned value on every
+        weekday toggle. Verified by hand-setting two of them and confirming they survived a save.
+      - Needs an explicit `.eq("user_id", …)` even though RLS scopes it to that one row: PostgREST
+        rejects a filter-less UPDATE with `21000` *before* RLS is consulted. Found the hard way — the
+        first version reported success over a database that hadn't changed.
+- [x] `leads` → `DatabasePage`, `LeadDialog`, CSV import. `lib/use-leads.ts` (queries + `useLeads`);
+      `MOCK_LEADS` deleted.
+      - **Zod-validates every parsed CSV row.** `parseLeadsCsv` now returns accepted rows *plus*
+        per-row rejections (line number + reason) instead of `Lead[]`, and only fails outright if the
+        file can't be read — "row 14's email is missing an @" beats "your CSV is broken". `email` and
+        `send_time_ist` are checked against the columns' own CHECK constraints, so a parse success
+        can't 23514; the other fields default to `''` in Postgres, so a blank cell is not an error.
+      - One definition of a valid address, in `shared/leads.ts` (`LEAD_EMAIL_PATTERN`). It had been
+        hand-copied into three places at three different strengths — the server's zod schema, the
+        lead dialog, and the importer — and the dialog's was the loosest.
+      - Duplicates are filtered client-side before the insert. `(user_id, lower(email))` is unique,
+        and the bulk insert is one statement, so a single re-imported address would otherwise reject
+        the whole file. Every entry point lowercases, so case can't smuggle one past.
+      - **Two real bugs found by driving it, not by reading it.** `normalizeKey` stripped only
+        `[\s_-]`, so the `Send Time (IST)` header — the one `leadsToCsv` itself writes — normalized
+        to `sendtime(ist)`, matched nothing, and silently gave *every* imported lead the 10:00
+        default. And `created_at` defaults to `now()`, the **statement** timestamp, so all rows of a
+        bulk insert share it to the microsecond and `order("created_at")` alone let the table
+        reshuffle between reloads; `email` is now the tiebreaker.
+      - `status` is still local-only (`patchStatus`). It's the scheduler's column and the launch
+        route isn't wired up, so writing `scheduled` here would claim a send nobody queued.
 - [x] `templates` + `template_steps` → `TemplatesPage`. Landed **out of order**, with Phase 6, because
       test-send renders the stored row: without persistence there is no UUID to send and nothing to
       render. `lib/templates.ts` (queries) + `lib/use-templates.ts` (store).
@@ -318,7 +343,18 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 - [ ] `sequence_steps` per lead → `ComposeFlow` (keyed by `lead_id`; every lead owns its own copy)
 - [ ] Move `newSequenceForLead`, `stepsFromTemplate`, `newTemplate` into `shared/`, then delete `mock-data.ts`
 - [ ] `LeadStatus` gains `sending | replied | failed | cancelled` in `shared/types.ts` + `StatusBadge`
-- [ ] **Verify:** create a lead → hard reload → it's still there
+- [x] **Verify:** driven in a real browser against the live project, every claim checked against SQL and
+      the network log rather than what the UI drew — dialog create (lowercased, real UUID), an invalid
+      address rejected client-side with the dialog held open so the typing survives, a duplicate
+      rendered as "varun@thumpn.com is already in your database." rather than Postgres's constraint
+      name, CSV import (3 inserted / 1 in-file duplicate skipped / 2 rejected with the right line
+      numbers), inline send-time `PATCH 204`, an edit through the dialog, a cleared website stored as
+      `null` and not `''`, delete, **hard reload with everything still there and the order stable**,
+      compose-flow send time persisting, and an Export → re-import round-trip with zero rejects.
+      - Two of those steps only tested anything after a fix: the chrome-devtools `fill` tool sets a
+        DOM value without firing React's `onChange` for `<input type="time">` and for clearing a text
+        input, so neither produced a request. Real `press_key` gestures were needed. Worth knowing —
+        a green browser check that issued no network call is not a check.
 
 ## Phase 5 — Google OAuth connect
 *Server done; the Google Cloud project and the frontend button are still open.*

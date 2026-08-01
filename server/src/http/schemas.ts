@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { LEAD_EMAIL_PATTERN } from "../../../shared/leads.ts"
 import { isValidIST } from "../../../shared/time.ts"
 
 /**
@@ -7,12 +8,18 @@ import { isValidIST } from "../../../shared/time.ts"
  * in `schema.sql`.
  */
 
-/** Matches the `leads.email` CHECK constraint, so a parse success can't 23514. */
+/**
+ * Matches the `leads.email` CHECK constraint, so a parse success can't 23514.
+ *
+ * The pattern itself lives in `shared/leads.ts` because the browser validates the
+ * same thing in two more places (the lead dialog and the CSV importer) and three
+ * hand-copied regexes had already drifted apart once.
+ */
 export const emailSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .regex(/^[^@\s]+@[^@\s]+\.[^@\s]+$/, "must be a valid email address")
+  .regex(LEAD_EMAIL_PATTERN, "must be a valid email address")
 
 export const uuidSchema = z.uuid()
 

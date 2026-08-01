@@ -7,7 +7,7 @@ import {
   useReactTable,
   type SortingState,
 } from "@tanstack/react-table"
-import { FileUp, Filter, Plus, Search, Upload, UserPlus } from "lucide-react"
+import { FileUp, Filter, Loader2, Plus, Search, Upload, UserPlus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -28,12 +28,14 @@ import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { LEAD_COLUMNS } from "./leadColumns"
 import { LeadDialog } from "./LeadDialog"
-import { leadsToCsv, parseLeadsCsv } from "@/lib/csv"
+import { leadsToCsv, parseLeadsCsv, type RejectedRow } from "@/lib/csv"
+import type { NewLead } from "@/lib/leads"
+import type { LeadsStore } from "@/lib/use-leads"
 import type { Lead } from "@/lib/types"
 
 interface DatabasePageProps {
-  leads: Lead[]
-  onChange: (leads: Lead[]) => void
+  /** Leads plus their persistence — see `useLeads`. */
+  store: LeadsStore
   /** Opens the per-recipient compose flow (Content → Preview → Launch). */
   onSend: (lead: Lead) => void
   /** Un-schedules a launched recipient, returning them to draft. */
@@ -41,19 +43,53 @@ interface DatabasePageProps {
 }
 
 /**
+ * How many bad rows to name individually before summarising.
+ *
+ * A toast listing 60 rows is unreadable and pushes everything else off screen.
+ * Three is enough to show the *pattern* — one wrong column usually breaks every
+ * row the same way — and the count carries the rest.
+ */
+const MAX_LISTED_REJECTS = 3
+
+/**
+ * Tell the user which rows didn't import and why.
+ *
+ * An error rather than a warning: these leads are silently absent, and the whole
+ * reason `parseLeadsCsv` validates is that discovering it later means discovering
+ * it as a failed send.
+ */
+function reportRejected(rejected: RejectedRow[]) {
+  const listed = rejected
+    .slice(0, MAX_LISTED_REJECTS)
+    .map((r) => `Row ${r.line}${r.email ? ` (${r.email})` : ""}: ${r.problems.join("; ")}`)
+
+  const remaining = rejected.length - listed.length
+
+  toast.error(
+    rejected.length === 1 ? "1 row couldn't be imported" : `${rejected.length} rows couldn't be imported`,
+    {
+      description: [
+        ...listed,
+        ...(remaining > 0 ? [`…and ${remaining} more.`] : []),
+      ].join("\n"),
+      // Longer than the default: this is a list to read, not an acknowledgement.
+      duration: 10_000,
+    }
+  )
+}
+
+/**
  * The app's first page — the recipient database. Every row has its own Send
  * button, which is how per-recipient personalization starts.
  */
-export function DatabasePage({
-  leads,
-  onChange,
-  onSend,
-  onCancelSchedule,
-}: DatabasePageProps) {
+export function DatabasePage({ store, onSend, onCancelSchedule }: DatabasePageProps) {
+  const { leads } = store
   const [globalFilter, setGlobalFilter] = useState("")
   const [sorting, setSorting] = useState<SortingState>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingLead, setEditingLead] = useState<Lead | null>(null)
+  /** True while a CSV is being parsed and inserted. */
+  const [importing, setImporting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   function openAdd() {
@@ -61,15 +97,23 @@ export function DatabasePage({
     setDialogOpen(true)
   }
 
-  function handleSaveLead(lead: Lead) {
-    const exists = leads.some((l) => l.id === lead.id)
-    if (exists) {
-      onChange(leads.map((l) => (l.id === lead.id ? lead : l)))
-      toast.success("Lead updated")
-    } else {
-      onChange([...leads, lead])
-      toast.success("Lead added")
+  /**
+   * Persist the dialog. Returns whether it landed, so the dialog can stay open on
+   * failure — a rejected duplicate shouldn't cost the user their typing.
+   *
+   * `editingLead` decides insert vs update rather than looking for the id in the
+   * list: the dialog no longer invents ids, so a new lead simply has none.
+   */
+  async function handleSaveLead(lead: NewLead): Promise<boolean> {
+    if (editingLead) {
+      const saved = await store.update(editingLead.id, lead)
+      if (saved) toast.success("Lead updated")
+      return saved !== null
     }
+
+    const saved = await store.create(lead)
+    if (saved) toast.success("Lead added")
+    return saved !== null
   }
 
   const table = useReactTable({
@@ -87,9 +131,8 @@ export function DatabasePage({
      * keep their identity and an in-progress edit holds focus.
      */
     meta: {
-      onEditTime: (id, value) =>
-        onChange(leads.map((l) => (l.id === id ? { ...l, sendTimeIST: value } : l))),
-      onDelete: (id) => onChange(leads.filter((l) => l.id !== id)),
+      onEditTime: store.setSendTime,
+      onDelete: (id) => void store.remove(id),
       onEdit: (lead) => {
         setEditingLead(lead)
         setDialogOpen(true)
@@ -102,13 +145,49 @@ export function DatabasePage({
   async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
+
+    setImporting(true)
+
     try {
-      const imported = await parseLeadsCsv(file)
-      onChange([...leads, ...imported])
-      toast.success(`Imported ${imported.length} recipients`)
+      const { leads: parsed, rejected } = await parseLeadsCsv(file)
+
+      // Rejected rows are reported even when nothing is left to insert — "3 rows
+      // were skipped" is the useful half of an import that imported nothing.
+      if (rejected.length > 0) reportRejected(rejected)
+
+      if (parsed.length === 0) {
+        if (rejected.length === 0) toast.error("That CSV had no rows in it")
+        return
+      }
+
+      const outcome = await store.importLeads(parsed)
+      // null means the insert failed and the store has already said why.
+      if (!outcome) return
+
+      if (outcome.inserted === 0) {
+        toast.info("Nothing new to import", {
+          description: `All ${outcome.duplicates.length} of those addresses were duplicates.`,
+        })
+        return
+      }
+
+      toast.success(`Imported ${outcome.inserted} recipients`, {
+        ...(outcome.duplicates.length > 0 && {
+          // "duplicate" rather than "already in your database": a file listing the
+          // same address twice is skipped here too, and saying otherwise would send
+          // the user looking for a row that isn't there.
+          description: `Skipped ${outcome.duplicates.length} duplicate ${
+            outcome.duplicates.length === 1 ? "address" : "addresses"
+          }.`,
+        }),
+      })
     } catch {
+      // Only a failure to *read* the file reaches here — bad rows come back as
+      // `rejected` rather than throwing.
       toast.error("Could not parse that CSV file")
     } finally {
+      setImporting(false)
+      // Cleared so picking the same file again re-fires `change`.
       if (fileRef.current) fileRef.current.value = ""
     }
   }
@@ -140,7 +219,9 @@ export function DatabasePage({
       {/* Toolbar */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium text-muted-foreground">
-          {leads.length} recipients
+          {/* Not "0 recipients" while the first read is in flight — that's a
+              statement about the database, and it would be wrong. */}
+          {store.loading ? "Loading…" : `${leads.length} recipients`}
         </span>
         <div className="relative ml-1 w-72 max-w-full">
           <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -164,8 +245,20 @@ export function DatabasePage({
           />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-1.5">
-                <Plus className="size-4" /> Add recipients
+              {/* Disabled until the first read resolves: an import needs the
+                  current list to know which addresses are already there. */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                disabled={store.loading || importing}
+              >
+                {importing ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Plus className="size-4" />
+                )}
+                {importing ? "Importing…" : "Add recipients"}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
@@ -177,7 +270,13 @@ export function DatabasePage({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExport}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            disabled={leads.length === 0}
+            onClick={handleExport}
+          >
             <Upload className="size-4" /> Export
           </Button>
         </div>
@@ -244,8 +343,20 @@ export function DatabasePage({
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={LEAD_COLUMNS.length} className="h-24 text-center text-muted-foreground">
-                  No recipients yet. Import a CSV to get started.
+                <TableCell
+                  colSpan={LEAD_COLUMNS.length}
+                  className="h-24 text-center text-muted-foreground"
+                >
+                  {/* Three different empty states. "No recipients yet" during the
+                      first read would be a claim about the database, and after a
+                      search it would be flatly wrong. */}
+                  {store.loading ? (
+                    <Loader2 className="mx-auto size-4 animate-spin" />
+                  ) : globalFilter ? (
+                    `No recipients match "${globalFilter}".`
+                  ) : (
+                    "No recipients yet. Import a CSV to get started."
+                  )}
                 </TableCell>
               </TableRow>
             )}

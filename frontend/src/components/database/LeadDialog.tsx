@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { Loader2 } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -11,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { SendTimePicker } from "@/components/common/SendTimePicker"
+import { isValidLeadEmail, type NewLead } from "@/lib/leads"
 import { isValidIST } from "@/lib/time"
 import type { Lead } from "@/lib/types"
 
@@ -19,7 +21,15 @@ interface LeadDialogProps {
   onOpenChange: (open: boolean) => void
   /** When provided, the dialog edits this lead; otherwise it adds a new one. */
   lead?: Lead | null
-  onSave: (lead: Lead) => void
+  /**
+   * Persist. Resolves `true` once the row is written, `false` if the write failed
+   * — the dialog stays open on `false` so the typed values aren't lost, and the
+   * reason has already been reported by the caller.
+   *
+   * A `NewLead` rather than a `Lead`: the id comes from Postgres, and `status` /
+   * `repliedAt` are the scheduler's.
+   */
+  onSave: (lead: NewLead) => Promise<boolean>
 }
 
 type FormState = {
@@ -62,6 +72,8 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
   const isEdit = Boolean(lead)
   const [form, setForm] = useState<FormState>(EMPTY)
   const [error, setError] = useState<string | null>(null)
+  /** True from the Save click until the write resolves. */
+  const [saving, setSaving] = useState(false)
 
   // Reset the form whenever the dialog opens (with or without a lead to edit).
   useEffect(() => {
@@ -75,8 +87,14 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
-  function handleSave() {
-    if (!form.email.trim() || !/^\S+@\S+\.\S+$/.test(form.email)) {
+  async function handleSave() {
+    /*
+     * Both checks are the database's own, via `shared/`: `isValidLeadEmail` is the
+     * `leads_email_check` regex and `isValidIST` the `send_time_ist` one. Anything
+     * that gets past here inserts; anything that doesn't would have come back as a
+     * 23514 with the constraint's name in it.
+     */
+    if (!isValidLeadEmail(form.email)) {
       setError("Please enter a valid email address.")
       return
     }
@@ -84,20 +102,29 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
       setError("Send time must be a valid time (HH:mm).")
       return
     }
-    onSave({
-      id: lead?.id ?? `manual-${form.email}-${form.sendTimeIST}`,
+
+    setError(null)
+    setSaving(true)
+
+    const saved = await onSave({
       companyName: form.companyName.trim(),
       firstName: form.firstName.trim(),
       lastName: form.lastName.trim(),
-      email: form.email.trim(),
+      // Lowercased to match the CSV importer: `(user_id, lower(email))` is unique,
+      // so differing case would otherwise be a 23505 rather than an obvious clash.
+      email: form.email.trim().toLowerCase(),
       personalizationLine: form.personalizationLine.trim(),
       sendTimeIST: form.sendTimeIST,
       jobTitle: form.jobTitle.trim() || undefined,
       website: form.website.trim() || undefined,
       verification: lead?.verification ?? "not_verified",
-      status: lead?.status ?? "draft",
     })
-    onOpenChange(false)
+
+    setSaving(false)
+
+    // Held open on failure so the typed values survive a duplicate address or a
+    // dropped connection. The caller has already said what went wrong.
+    if (saved) onOpenChange(false)
   }
 
   return (
@@ -184,10 +211,13 @@ export function LeadDialog({ open, onOpenChange, lead, onSave }: LeadDialogProps
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave}>{isEdit ? "Save changes" : "Add lead"}</Button>
+          <Button className="gap-1.5" disabled={saving} onClick={() => void handleSave()}>
+            {saving && <Loader2 className="size-4 animate-spin" />}
+            {saving ? "Saving…" : isEdit ? "Save changes" : "Add lead"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

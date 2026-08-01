@@ -26,7 +26,15 @@ interface ComposeFlowProps {
   onStepsChange: (steps: SequenceStep[]) => void
   /** Saved sequence templates the user can drop onto this recipient. */
   templates: EmailTemplate[]
-  onLeadChange: (patch: Partial<Lead>) => void
+  /**
+   * The one lead field this flow edits, written straight through to `leads`.
+   *
+   * Deliberately narrower than the `(patch: Partial<Lead>) => void` it replaced:
+   * that shape suggested any field could be changed here, and now that the patch
+   * has to reach the database, a caller passing `{ status }` or `{ email }` would
+   * have been quietly dropped.
+   */
+  onChangeSendTime: (hhmm: string) => void
   onLaunch: () => void
   onBack: () => void
   /** Connected Gmail address — the test send needs one to send from. */
@@ -42,7 +50,7 @@ export function ComposeFlow({
   steps,
   onStepsChange,
   templates,
-  onLeadChange,
+  onChangeSendTime,
   onLaunch,
   onBack,
   senderEmail,
@@ -105,7 +113,7 @@ export function ComposeFlow({
           onDuplicateStep={(id) => onStepsChange(duplicateEmailStep(steps, id))}
           onDeleteStep={deleteStep}
           onChangeDelay={(id, days) => onStepsChange(setDelayDays(steps, id, days))}
-          onChangeSendTime={(hhmm) => onLeadChange({ sendTimeIST: hhmm })}
+          onChangeSendTime={onChangeSendTime}
           senderEmail={senderEmail}
         />
       ) : (
