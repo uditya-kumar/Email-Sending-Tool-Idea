@@ -19,13 +19,13 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const canSubmit = email.trim().length > 0 && password.length > 0 && !busy
+  const filled = email.trim().length > 0 && password.length > 0
 
   async function handleSubmit(event: React.FormEvent) {
     // A real <form> so Enter submits and password managers recognise it; that
     // means suppressing the navigation the browser would otherwise do.
     event.preventDefault()
-    if (!canSubmit) return
+    if (!filled || busy) return
 
     setBusy(true)
     setError(null)
@@ -63,12 +63,19 @@ export function LoginPage() {
             <Label htmlFor="login-email">Email address</Label>
             <Input
               id="login-email"
+              // `name` as well as `id`: without it Chrome won't offer to save the
+              // credential, and it reports the field as unnamed in the issues panel.
+              name="email"
               type="email"
-              // Not `autoFocus` on the password field: the browser fills both
-              // from a saved credential, and focusing email first matches the
-              // reading order when it doesn't.
-              autoFocus
+              /*
+               * Deliberately not `autoFocus`. The focus ring here is the theme's
+               * orange, which on an empty required-looking field reads as a
+               * validation error the moment the page loads — nothing has gone
+               * wrong yet. The user's first action on a sign-in screen is to
+               * click or Tab into this field anyway.
+               */
               autoComplete="username"
+              required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
@@ -80,8 +87,10 @@ export function LoginPage() {
             <Label htmlFor="login-password">Password</Label>
             <Input
               id="login-password"
+              name="password"
               type="password"
               autoComplete="current-password"
+              required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
@@ -101,7 +110,15 @@ export function LoginPage() {
             </p>
           )}
 
-          <Button type="submit" className="w-full" disabled={!canSubmit}>
+          {/*
+            Disabled only while a request is in flight, not while the fields are
+            empty. A `disabled` primary button is `bg-primary` at 50% opacity,
+            which on an otherwise blank page reads as a broken control rather
+            than as "fill this in first" — and it's the only thing on screen to
+            compare against. An empty submit is cheap to ignore in
+            `handleSubmit`; browser `required` validation catches it too.
+          */}
+          <Button type="submit" className="w-full" disabled={busy}>
             {busy && <Loader2 className="size-4 animate-spin" />}
             {busy ? "Signing in…" : "Sign in"}
           </Button>
