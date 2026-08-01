@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { newTemplateSteps } from "@shared/sequence.ts"
-import type { EmailTemplate, SequenceStep } from "@shared/types.ts"
+import type { EmailTemplate, SequenceStep, StepAttachment } from "@shared/types.ts"
+import { attachFileToStep, removeAttachment } from "./attachments"
+import { isPersistedStepId } from "./sequences"
 import {
   createTemplate,
   deleteTemplate,
@@ -43,6 +45,22 @@ export interface TemplatesStore {
   add: () => Promise<EmailTemplate | null>
   duplicate: (templateId: string) => Promise<EmailTemplate | null>
   remove: (templateId: string) => Promise<void>
+  /**
+   * Upload a file and attach it to one **persisted** template step.
+   *
+   * The point of attaching here rather than per recipient: a resume uploaded to the
+   * "AI role" template comes along every time that template is applied, so it is
+   * picked once instead of once per email. Rejects with a message meant to be shown.
+   */
+  attach: (templateId: string, stepId: string, file: File) => Promise<void>
+  /**
+   * Detach a file from a template step.
+   *
+   * Only deletes the stored file if nothing else references it — leads the template
+   * has already been applied to share the same `attachments` row, including ones with
+   * queued sends. `removeAttachment` counts the references.
+   */
+  detach: (templateId: string, stepId: string, attachment: StepAttachment) => Promise<void>
   /** Write any pending debounced edits now. Await before sending. */
   flush: () => Promise<void>
 }
@@ -158,9 +176,10 @@ export function useTemplates(onError: (message: string) => void): TemplatesStore
   const setSteps = useCallback(
     async (templateId: string, steps: SequenceStep[]): Promise<SequenceStep[]> => {
       /*
-       * Flush first. `replaceSteps` deletes every row and re-inserts, so a pending
-       * content save aimed at one of the doomed ids would either fail or write to a
-       * row that's about to vanish — either way the edit is lost.
+       * Flush first. `replaceSteps` deletes the rows that are gone, so a pending
+       * content save aimed at one of them would either fail or write to a row about to
+       * vanish — and for a surviving step, a write landing *after* the upsert would be
+       * lost to it.
        */
       await flush()
 
@@ -193,8 +212,8 @@ export function useTemplates(onError: (message: string) => void): TemplatesStore
   const add = useCallback(async (): Promise<EmailTemplate | null> => {
     try {
       /*
-       * The placeholder ids `newTemplateSteps` generates are stripped by
-       * `replaceSteps`; Postgres assigns the UUIDs that come back and get stored.
+       * The placeholder ids `newTemplateSteps` generates are replaced by
+       * `replaceSteps` with real UUIDs; those are what come back and get stored.
        */
       const created = await createTemplate("Untitled template", newTemplateSteps("new"))
       setTemplates((prev) => [...prev, created])
@@ -213,6 +232,12 @@ export function useTemplates(onError: (message: string) => void): TemplatesStore
       if (!source) return null
 
       try {
+        /*
+         * `source.steps` still carry the original's real UUIDs. `replaceSteps` re-keys
+         * them — it only reuses an id already owned by the template being written —
+         * which is what stops this *moving* the original's rows into the copy. Their
+         * attachments are re-linked to the new rows, so the copy shares the same files.
+         */
         const created = await createTemplate(`${source.name} (copy)`, source.steps)
         setTemplates((prev) => {
           const idx = prev.findIndex((t) => t.id === templateId)
@@ -229,6 +254,79 @@ export function useTemplates(onError: (message: string) => void): TemplatesStore
       }
     },
     [flush, templates]
+  )
+
+  /**
+   * Rewrite one step's attachment list in place.
+   *
+   * A functional update rather than a read of `templates`, so an upload that resolves
+   * after an unrelated edit doesn't reinstate the older list.
+   */
+  const putAttachments = useCallback(
+    (
+      templateId: string,
+      stepId: string,
+      next: (current: StepAttachment[]) => StepAttachment[]
+    ) => {
+      setTemplates((prev) =>
+        prev.map((t) =>
+          t.id === templateId
+            ? {
+                ...t,
+                steps: t.steps.map((step) =>
+                  step.id === stepId
+                    ? { ...step, attachments: next(step.attachments ?? []) }
+                    : step
+                ),
+              }
+            : t
+        )
+      )
+    },
+    []
+  )
+
+  const attach = useCallback(
+    async (templateId: string, stepId: string, file: File) => {
+      /*
+       * `template_step_attachments.template_step_id` is a foreign key, so a
+       * placeholder id would fail with a 23503 the user can't act on. Templates are
+       * persisted on creation, so this is a guard rather than a path.
+       */
+      if (!isPersistedStepId(stepId)) {
+        throw new Error("Save the template before attaching a file to it.")
+      }
+
+      /*
+       * The step's current total, because the size limit is per message — see
+       * `MAX_ATTACHMENT_BYTES`. Read from the live list rather than passed in by the
+       * component, so the check can't be bypassed by a stale prop.
+       */
+      const attached =
+        templates
+          .find((t) => t.id === templateId)
+          ?.steps.find((step) => step.id === stepId)?.attachments ?? []
+      const attachedBytes = attached.reduce((sum, f) => sum + f.sizeBytes, 0)
+
+      // No optimistic insert: a file that appears and then vanishes reads as data
+      // loss rather than as a rejected upload.
+      const saved = await attachFileToStep(stepId, file, attachedBytes, "template")
+
+      putAttachments(templateId, stepId, (current) =>
+        [...current, saved].sort((a, b) => a.filename.localeCompare(b.filename))
+      )
+    },
+    [putAttachments, templates]
+  )
+
+  const detach = useCallback(
+    async (templateId: string, stepId: string, attachment: StepAttachment) => {
+      await removeAttachment(attachment, stepId, "template")
+      putAttachments(templateId, stepId, (current) =>
+        current.filter((f) => f.id !== attachment.id)
+      )
+    },
+    [putAttachments]
   )
 
   const remove = useCallback(async (templateId: string) => {
@@ -250,6 +348,8 @@ export function useTemplates(onError: (message: string) => void): TemplatesStore
     add,
     duplicate,
     remove,
+    attach,
+    detach,
     flush,
   }
 }

@@ -421,8 +421,17 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
             onEditStep={(stepId, patch) =>
               sequencesStore.editStep(composingLead.id, stepId, patch)
             }
+            onApplyTemplate={(template) =>
+              sequencesStore.applyTemplate(composingLead.id, template)
+            }
             templates={templates}
             onChangeSendTime={(hhmm) => leadsStore.setSendTime(composingLead.id, hhmm)}
+            onAttach={(stepId, file) =>
+              sequencesStore.attach(composingLead.id, stepId, file)
+            }
+            onDetach={(stepId, attachment) =>
+              sequencesStore.detach(composingLead.id, stepId, attachment)
+            }
             onLaunch={() => launchLead(composingLead)}
             onBack={backToDatabase}
             onFlush={sequencesStore.flush}

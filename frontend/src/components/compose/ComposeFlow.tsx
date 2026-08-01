@@ -10,13 +10,13 @@ import {
   duplicateEmailStep,
   removeEmailStep,
   setDelayDays,
-  stepsFromTemplate,
 } from "@/lib/sequence"
 import type {
   ComposeStep,
   EmailTemplate,
   Lead,
   SequenceStep,
+  StepAttachment,
 } from "@/lib/types"
 
 interface ComposeFlowProps {
@@ -33,6 +33,14 @@ interface ComposeFlowProps {
   onStepsChange: (steps: SequenceStep[]) => Promise<SequenceStep[]>
   /** Content-only edit of one step — debounced by the store, not written here. */
   onEditStep: (stepId: string, patch: Partial<SequenceStep>) => void
+  /**
+   * Drop a whole template onto this recipient, resolving to the saved list.
+   *
+   * Separate from `onStepsChange` because a template also carries its **attached
+   * files**, and those can only be linked once the new step rows have ids. The store
+   * owns that second write.
+   */
+  onApplyTemplate: (template: EmailTemplate) => Promise<SequenceStep[]>
   /** Saved sequence templates the user can drop onto this recipient. */
   templates: EmailTemplate[]
   /**
@@ -44,6 +52,13 @@ interface ComposeFlowProps {
    * have been quietly dropped.
    */
   onChangeSendTime: (hhmm: string) => void
+  /**
+   * Attach / detach a file on one step. Rejects with a message meant to be shown —
+   * `AttachmentBar` reports it against the file it belongs to, which is why these
+   * throw rather than route through the store's `onError`.
+   */
+  onAttach: (stepId: string, file: File) => Promise<void>
+  onDetach: (stepId: string, attachment: StepAttachment) => Promise<void>
   /** Queue the opening email. Resolves when the server has answered. */
   onLaunch: () => Promise<void>
   onBack: () => void
@@ -62,8 +77,11 @@ export function ComposeFlow({
   steps,
   onStepsChange,
   onEditStep,
+  onApplyTemplate,
   templates,
   onChangeSendTime,
+  onAttach,
+  onDetach,
   onLaunch,
   onBack,
   onFlush,
@@ -117,14 +135,27 @@ export function ComposeFlow({
     setBusy(false)
   }
 
-  /** Drop a saved template in wholesale: every email, follow-up and wait. */
+  /**
+   * Drop a saved template in wholesale: every email, follow-up, wait — and the files
+   * attached to it.
+   */
   async function applyTemplate(template: EmailTemplate) {
     setBusy(true)
-    const saved = await onStepsChange(stepsFromTemplate(template, lead.id))
+    const saved = await onApplyTemplate(template)
     setBusy(false)
     setChosenStepId(saved.find((s) => s.kind === "email")?.id ?? "")
+
+    /*
+     * The files are worth naming in the toast: they arrive silently otherwise, and
+     * "did my resume come along?" is exactly the question this feature exists to stop
+     * the user asking.
+     */
+    const files = saved.reduce((sum, step) => sum + (step.attachments?.length ?? 0), 0)
+    const withFiles =
+      files > 0 ? ` · ${files} attachment${files === 1 ? "" : "s"}` : ""
+
     toast.success(`Applied "${template.name}"`, {
-      description: `${describeSequence(saved)} — edit anything below for ${
+      description: `${describeSequence(saved)}${withFiles} — edit anything below for ${
         fullName(lead) || lead.email
       }.`,
     })
@@ -160,6 +191,8 @@ export function ComposeFlow({
           onDeleteStep={(id) => void deleteStep(id)}
           onChangeDelay={(id, days) => void runStructural(setDelayDays(steps, id, days))}
           onChangeSendTime={onChangeSendTime}
+          onAttach={onAttach}
+          onDetach={onDetach}
           onFlush={onFlush}
           leadId={lead.id}
           busy={busy}

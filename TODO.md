@@ -69,11 +69,15 @@ the Settings page.
 
 What's left:
 
-1. **Phase 7 (attachments UI)** — the attach control on the email step, still entirely unbuilt on
-   the frontend. `attachment-store.ts` is ready server-side. This is the only unbuilt feature left.
-2. **Phase 11's tunnel test** — open/click tracking needs a public URL to be exercised for real; the
+1. **Phase 11's tunnel test** — open/click tracking needs a public URL to be exercised for real; the
    endpoints and their refusal paths are already verified locally.
-3. **Revert the sending days** before going live (see the warning above).
+2. **Revert the sending days** before going live (see the warning above).
+
+**All six features are now built and verified end to end.** Phase 7 (attachments) was the last
+unbuilt one; everything remaining above is a verification that needs a public URL, or deploy prep.
+
+The **Templates** page now has an attach control too, and applying a template carries its files onto
+the recipient's steps — see Phase 7b.
 
 **Known gap, low priority:** nothing prunes abandoned `oauth_states` rows. A row is burned on a
 successful callback and an expired one is refused, so this is unbounded growth rather than a
@@ -360,10 +364,11 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 - [x] `sequence_steps` per lead → `ComposeFlow` (keyed by `lead_id`; every lead owns its own copy).
       `lib/sequences.ts` (queries) + `lib/use-sequences.ts` (store), mirroring the two write schedules
       above. Launch and cancel now call the real routes instead of setting status locally.
-      - **Deliberately not `templates.ts`'s delete-then-insert, despite identical columns.** Two tables
-        point at these rows: `sends.step_id` is `on delete set null` and `step_attachments.step_id`
-        cascades. Re-inserting with fresh ids would detach a queued send from its step and silently
-        drop every attachment of a scheduled email. So writes here **preserve ids**.
+      - **Not a delete-then-insert, despite the identical columns.** Two tables point at these rows:
+        `sends.step_id` is `on delete set null` and `step_attachments.step_id` cascades. Re-inserting
+        with fresh ids would detach a queued send from its step and silently drop every attachment of
+        a scheduled email. So writes here **preserve ids**. (`templates.ts` *was* a delete-then-insert;
+        Phase 7b made it preserve ids too, for the second of those reasons.)
       - That forced knowing exactly what `sequence_steps_position_key`
         (`unique (lead_id, position) deferrable initially deferred`) actually permits, which I probed
         against the live database: **PostgREST autocommits every statement**, so there is no
@@ -512,17 +517,72 @@ every optional field needs conditional-spread form. Know this before Phase 5.
       `claimed: 0, sent: 0` and the database shows `sends: 0` / `events: 0` — proof that the
       no-cap/no-tracking/no-`sends`-row design of test-send actually holds and can't disturb a campaign.
 
-## Phase 7 — Resume attachment
-*The frontend has no attach UI at all today — this phase adds it.*
+## Phase 7 — Resume attachment ✅
 
-- [ ] Attach control on the email step in `ContentStep` → upload to Storage → `attachments` + `step_attachments`
-- [ ] Cap uploads at ~4 MB so `raw` never crosses the 5 MB `messages.send` ceiling
-      *(the bucket already enforces this; the UI needs to fail politely rather than on a 413)*
+- [x] Attach control on the email step in `ContentStep` → upload to Storage → `attachments` +
+      `step_attachments`. `AttachmentBar` sits under the body where a mail client puts it;
+      `frontend/src/lib/attachments.ts` owns the write path and orders the three writes
+      **object → row → link**, so a failure never leaves a link pointing at a file that isn't
+      there (`attachment-store.ts` throws on a missing object, which would be a permanently
+      failing send). Each later step unwinds the earlier ones on failure.
+- [x] Cap uploads so `raw` never crosses the 5 MB `messages.send` ceiling — **3.5 MB, not 4 MB**.
+      The old note here was wrong: base64 inflates by 4/3, so a bucket-legal 4 MB file becomes
+      ~5.33 MB of `raw` and fails `MAX_RAW_LENGTH` *after* uploading successfully. The real ceiling
+      is 5,000,000 × ¾ ≈ 3.75 MB, and `MAX_ATTACHMENT_BYTES` (`shared/attachments.ts`) sits at
+      3.5 MB to leave room for headers and both body parts. Applied to a step's **total**, since
+      Gmail's limit is per message. The bucket's 4 MB is now documented as a backstop.
 - [x] `server/src/storage/attachment-store.ts` → `fetchForStep()` / `fetchForTemplateStep()` return
       Buffers for MIME. Two methods because the same step id can live in either `step_attachments` or
       `template_step_attachments`, so the caller says which — `test-send` gets that from its own
       step lookup rather than guessing.
-- [ ] **Verify:** test-send arrives with the PDF attached and openable
+- [x] **Verified end to end** (Gmail message `19fbe7042985d27e`): a 117,189-byte PDF attached in
+      `ContentStep`, `attachments` row + `step_attachments` link + bucket object all written, and
+      `npx tsx src/scripts/inspect-attachments.ts <messageId>` read the message back out of Gmail —
+      `application/pdf filename=Uditya_Kumar_Resume.pdf bytes=117189`, downloaded byte-identical and
+      starting `%PDF-`. Also verified: a `.txt` is refused client-side with a readable message and no
+      upload, removing a file clears the row, the cascaded link **and** the bucket object with no
+      orphan, and the private-bucket preview opens through a signed URL.
+- [x] Attachments survive a step save. `saveSequence` carries them across its read-back keyed by id
+      (`sequence_steps` has no attachment column, so mapping the rows straight through would blank
+      every file on screen after an unrelated structural edit).
+
+### Phase 7b — Template attachments ✅
+
+Was listed here as out of scope; asked for and built. Attach a resume to a template once (one per
+role), and applying that template to a recipient brings the file along.
+
+- [x] `replaceSteps` in `templates.ts` **preserves step ids** — it was delete-then-insert, and
+      `template_step_attachments.template_step_id` cascades, so adding a step or nudging a wait from
+      3 days to 4 silently threw away every attached file. Same delete → upsert-on-`id` → read-back
+      shape as `saveSequence`, including minting uuids client-side (PostgREST derives one column list
+      per batch and writes `null` rather than consulting the column default).
+- [x] `reuse` guards `duplicate`: it passes the *source* template's real uuids, so a naive
+      id-preserving upsert would **move** the original's rows — and their files — into the copy.
+      An id is only kept when it already belongs to *this* template; anything else is re-keyed and
+      its files re-linked. Verified by SQL: original kept its step, the copy got a fresh one, both
+      pointing at the same `attachments` row.
+- [x] `attachments.ts` generalised over a `StepOwner` (`"sequence" | "template"`) rather than
+      duplicated. The three link helpers name each table and step column as **literals** — a
+      `{table, column}` lookup reads better but can't be typed, since supabase-js derives the row
+      shape from the literal table name and a variable one yields a union where neither step column
+      exists. The only way through was a cast that would have hidden a real column rename.
+- [x] Applying a template **shares** the `attachments` row rather than copying the object — one
+      stored resume serves every recipient. So deleting a file is **reference counted across both
+      link tables** (`deleteIfUnreferenced`): deleting the row outright would cascade the resume out
+      of every other email using it, including queued sends.
+- [x] Orphan pruning on every path that deletes a step. Both link tables cascade off their step, so
+      `saveSequence` / `deleteSequence` / `replaceSteps` / `deleteTemplate` read the doomed steps'
+      files *before* the delete and prune after — otherwise the row and bucket object outlive every
+      reference to them, which Apply Template did on every single use.
+- [x] **Verified end to end** (Gmail message `19fbe871c0c6750c`): built "AI role" and "Mobile role"
+      templates with one resume each, applied "Mobile role" to a lead, and confirmed by SQL that the
+      lead's step links the *same* row (`template_links=1, sequence_links=1` — shared, not copied).
+      `inspect-attachments.ts` read the delivered message back out of Gmail:
+      `application/pdf filename=Resume_Mobile_Role.pdf bytes=563`, downloaded intact, starts `%PDF-`.
+      Also verified live: a chip survives adding a step and a page reload; deleting a template step
+      whose file nothing else used removed the row *and* the object; deleting the whole "Mobile role"
+      template left the file intact (`template_links` 1 → 0) because the lead's queued email still
+      needs it, and the chip is still on that email.
 
 ## Phase 8 — Scheduler (opening email only)
 *Server done; the end-to-end timing test needs a connected Gmail and real leads.*

@@ -97,8 +97,15 @@ export function SendTestPopover({
       setOpen(false)
       toast.success(`Test email sent to ${result.to}`, {
         // The server prefixes the real subject with "[TEST] " — say so, so the
-        // subject in the inbox doesn't look like a bug.
-        description: `Sent from ${result.from} as “[TEST] ${result.subject}”.`,
+        // subject in the inbox doesn't look like a bug. The attachment list comes
+        // from the files the server actually downloaded and attached, so it is the
+        // only confirmation that a file made it into the message rather than just
+        // into the bucket.
+        description: `Sent from ${result.from} as “[TEST] ${result.subject}”${
+          result.attachments.length > 0
+            ? ` with ${result.attachments.join(", ")}`
+            : ""
+        }.`,
       })
     } catch (error) {
       toast.error("Couldn't send the test", { description: describe(error) })

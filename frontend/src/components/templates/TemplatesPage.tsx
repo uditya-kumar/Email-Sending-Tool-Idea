@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { FileText, Loader2, Mail } from "lucide-react"
 import { Input } from "@/components/ui/input"
+import { AttachmentBar } from "@/components/compose/AttachmentBar"
 import { SequenceSidebar } from "@/components/compose/SequenceSidebar"
 import { EmailEditor } from "@/components/compose/EmailEditor"
 import { SendTestPopover } from "@/components/compose/SendTestPopover"
@@ -13,6 +14,7 @@ import {
   removeEmailStep,
   setDelayDays,
 } from "@/lib/sequence"
+import type { SequenceStep } from "@/lib/types"
 import type { TemplatesStore } from "@/lib/use-templates"
 
 interface TemplatesPageProps {
@@ -38,16 +40,24 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
    *
    * Both are resolved against the current list below rather than kept in sync with
    * it by an effect. That matters more than it looks: templates arrive
-   * asynchronously (so on first render there is nothing to select), and
-   * `store.setSteps` deletes and re-inserts every step row, so a selected step id
-   * routinely stops existing. Deriving the effective selection means both cases
-   * fall out for free, instead of each needing its own corrective effect that
-   * renders one wrong frame before fixing itself.
+   * asynchronously (so on first render there is nothing to select), and a new step
+   * is selected before it has the id Postgres will give it — so a chosen id
+   * routinely doesn't exist. Deriving the effective selection means both cases fall
+   * out for free, instead of each needing its own corrective effect that renders one
+   * wrong frame before fixing itself.
    */
   const [chosenTemplateId, setChosenTemplateId] = useState("")
   const [chosenStepId, setChosenStepId] = useState("")
   /** Which template the rename dialog is open for (null = closed). */
   const [renamingId, setRenamingId] = useState<string | null>(null)
+  /**
+   * True while a structural save is in flight.
+   *
+   * Only used to hold the attachment control: a step added or reordered mid-upload
+   * can be written with a different id, and the link would then point at a row the
+   * editor no longer shows.
+   */
+  const [busy, setBusy] = useState(false)
 
   const template =
     templates.find((t) => t.id === chosenTemplateId) ?? templates[0] ?? null
@@ -88,18 +98,26 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
     // first remaining template on the next render.
   }
 
+  /** Every structural write, so `busy` covers all of them rather than most. */
+  async function runStructural(next: SequenceStep[]): Promise<SequenceStep[]> {
+    if (!template) return steps
+    setBusy(true)
+    const saved = await store.setSteps(template.id, next)
+    setBusy(false)
+    return saved
+  }
+
   async function addStep() {
     if (!template) return
     const { steps: next } = appendFollowUp(steps, template.id)
-    const saved = await store.setSteps(template.id, next)
+    const saved = await runStructural(next)
     // Select the new follow-up by position, not by the id `appendFollowUp`
     // invented — the persisted rows carry database-assigned ids instead.
     setChosenStepId(saved.filter((s) => s.kind === "email").at(-1)?.id ?? "")
   }
 
   async function deleteStep(id: string) {
-    if (!template) return
-    await store.setSteps(template.id, removeEmailStep(steps, id))
+    await runStructural(removeEmailStep(steps, id))
   }
 
   if (loading) {
@@ -160,12 +178,10 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
               activeStepId={activeStepId}
               onSelect={setChosenStepId}
               onAddStep={() => void addStep()}
-              onDuplicateStep={(id) =>
-                void store.setSteps(template.id, duplicateEmailStep(steps, id))
-              }
+              onDuplicateStep={(id) => void runStructural(duplicateEmailStep(steps, id))}
               onDeleteStep={(id) => void deleteStep(id)}
               onChangeDelay={(id, days) =>
-                void store.setSteps(template.id, setDelayDays(steps, id, days))
+                void runStructural(setDelayDays(steps, id, days))
               }
             />
 
@@ -219,6 +235,18 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
                         store.editStep(template.id, activeStep.id, { bodyHtml: html })
                       }
                     />
+
+                    {/*
+                      Attached here, once, rather than per recipient: applying this
+                      template copies these files onto the lead's steps too. One
+                      resume per role, picked once.
+                    */}
+                    <AttachmentBar
+                      attachments={activeStep.attachments}
+                      onAttach={(file) => store.attach(template.id, activeStep.id, file)}
+                      onDetach={(file) => store.detach(template.id, activeStep.id, file)}
+                      disabled={busy}
+                    />
                   </div>
 
                   <p className="text-xs text-muted-foreground">
@@ -226,7 +254,8 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
                     <code className="rounded bg-muted px-1 py-0.5">
                       {'{{first_name:"there"}}'}
                     </code>{" "}
-                    are filled in per recipient when you send.
+                    are filled in per recipient when you send. Attachments come along
+                    when you apply this template to a recipient.
                   </p>
                 </div>
               ) : (

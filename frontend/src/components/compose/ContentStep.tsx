@@ -7,8 +7,9 @@ import { SequenceSidebar } from "./SequenceSidebar"
 import { EmailEditor } from "./EmailEditor"
 import { SendTestPopover } from "./SendTestPopover"
 import { ApplyTemplateMenu } from "./ApplyTemplateMenu"
+import { AttachmentBar } from "./AttachmentBar"
 import { formatIST } from "@/lib/time"
-import type { EmailTemplate, Lead, SequenceStep } from "@/lib/types"
+import type { EmailTemplate, Lead, SequenceStep, StepAttachment } from "@/lib/types"
 
 interface ContentStepProps {
   /** The one recipient this sequence belongs to. */
@@ -25,6 +26,9 @@ interface ContentStepProps {
   onDeleteStep: (id: string) => void
   onChangeDelay: (id: string, waitDays: number) => void
   onChangeSendTime: (hhmm: string) => void
+  /** Upload a file and attach it to the step being edited. */
+  onAttach: (stepId: string, file: File) => Promise<void>
+  onDetach: (stepId: string, attachment: StepAttachment) => Promise<void>
   /**
    * Flush pending content edits. Awaited before a test send, because the server
    * renders the stored row and ignores the request body.
@@ -52,6 +56,8 @@ export function ContentStep({
   onDeleteStep,
   onChangeDelay,
   onChangeSendTime,
+  onAttach,
+  onDetach,
   onFlush,
   leadId,
   busy,
@@ -153,6 +159,18 @@ export function ContentStep({
                   key={active.id}
                   bodyHtml={active.bodyHtml ?? ""}
                   onChange={(html) => onUpdateStep(active.id, { bodyHtml: html })}
+                />
+
+                {/*
+                  Below the body, where an attachment sits in a real email client.
+                  `busy` disables adding: a structural save can replace this step's
+                  id, and `step_attachments` would then point at the old row.
+                */}
+                <AttachmentBar
+                  attachments={active.attachments}
+                  onAttach={(file) => onAttach(active.id, file)}
+                  onDetach={(attachment) => onDetach(active.id, attachment)}
+                  disabled={busy}
                 />
               </div>
             </>

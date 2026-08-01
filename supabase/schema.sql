@@ -238,8 +238,12 @@ create table if not exists public.attachments (
   filename     text not null,                 -- as the recipient sees it
   storage_path text not null unique,           -- attachments/<uid>/<uuid>.pdf
   mime_type    text not null,
-  -- Capped at 4 MB so the built MIME never crosses the 5 MB messages.send
-  -- limit (base64 inflates by ~33%).
+  -- A backstop, NOT the real limit. 4 MB is not actually safe to send:
+  -- messages.send takes the whole MIME base64-encoded, which inflates by 4/3, so
+  -- 4 MB becomes ~5.33 MB of `raw` and trips GmailMailer's 5,000,000 ceiling —
+  -- after the upload has already succeeded. The enforced limit is
+  -- MAX_ATTACHMENT_BYTES in shared/attachments.ts (3.5 MB, applied to a step's
+  -- *total*, since Gmail's limit is per message rather than per file).
   size_bytes   int  not null check (size_bytes > 0 and size_bytes <= 4194304),
   created_at   timestamptz not null default now()
 );

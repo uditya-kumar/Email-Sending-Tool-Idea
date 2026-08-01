@@ -1,4 +1,5 @@
-import { Clock, Loader2, Mail, Rocket } from "lucide-react"
+import { Clock, Loader2, Mail, Paperclip, Rocket } from "lucide-react"
+import { formatAttachmentSize } from "@shared/attachments.ts"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -231,6 +232,27 @@ function RenderedEmail({ step, lead }: { step: SequenceStep; lead: Lead }) {
           className="prose-email px-4 py-4 text-sm leading-relaxed [&_a]:text-accent [&_a]:underline [&_p]:mb-3"
           dangerouslySetInnerHTML={{ __html: bodyHtml }}
         />
+      )}
+      {/*
+        Shown on the preview because this is the last screen before Launch, and an
+        attachment is part of what goes out — a resume silently missing (or silently
+        present) is exactly the kind of thing this page exists to catch.
+      */}
+      {!isEmpty && step.attachments && step.attachments.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-t px-4 py-3 text-xs text-muted-foreground">
+          <Paperclip className="size-3.5" />
+          {step.attachments.map((file) => (
+            <span
+              key={file.id}
+              className="rounded-md border bg-muted/40 px-2 py-1 text-foreground"
+            >
+              {file.filename}{" "}
+              <span className="text-muted-foreground">
+                {formatAttachmentSize(file.sizeBytes)}
+              </span>
+            </span>
+          ))}
+        </div>
       )}
     </div>
   )

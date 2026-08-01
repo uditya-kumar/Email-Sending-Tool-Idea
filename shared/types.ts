@@ -71,6 +71,23 @@ export interface MergeAttribute {
 
 export type SequenceStepKind = Enums<"step_kind">
 
+/**
+ * A file stored in the `attachments` bucket and linked to an email step.
+ *
+ * `storagePath` is deliberately included even though the UI never displays it: it
+ * is what a remove has to delete from Storage, and the row alone would leave the
+ * object orphaned in the bucket.
+ */
+export interface StepAttachment {
+  id: string
+  /** The name the recipient sees. */
+  filename: string
+  mimeType: string
+  sizeBytes: number
+  /** `attachments/<user_id>/<uuid>.<ext>` — the object's key in the bucket. */
+  storagePath: string
+}
+
 /** A step in the follow-up sequence: either an email or a wait. */
 export interface SequenceStep {
   id: string
@@ -83,6 +100,15 @@ export interface SequenceStep {
   bodyHtml?: string | undefined
   /** Delay fields (present when kind === "delay"). */
   waitDays?: number | undefined
+  /**
+   * Files attached to this email, or undefined when they haven't been read.
+   *
+   * Undefined rather than `[]` for "not loaded" is load-bearing: `stepToColumns`
+   * writes whole columns, and the whole-list save paths reconstruct steps from
+   * what's in memory. An empty array would be indistinguishable from "this step
+   * genuinely has no attachments" and a save could then drop the links.
+   */
+  attachments?: StepAttachment[] | undefined
 }
 
 /**

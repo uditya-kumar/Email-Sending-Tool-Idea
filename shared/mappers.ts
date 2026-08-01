@@ -4,6 +4,7 @@ import type {
   Lead,
   SenderAccount,
   SequenceStep,
+  StepAttachment,
   Weekday,
 } from "./types.ts"
 
@@ -26,6 +27,7 @@ type SequenceStepRow = Tables<"sequence_steps">
 type TemplateStepRow = Tables<"template_steps">
 type SettingsRow = Tables<"settings">
 type GmailAccountPublicRow = Tables<"gmail_accounts_public">
+type AttachmentRow = Tables<"attachments">
 
 /**
  * `null` → `undefined`.
@@ -77,14 +79,32 @@ export function leadToRow(
   }
 }
 
+export function attachmentFromRow(row: AttachmentRow): StepAttachment {
+  return {
+    id: row.id,
+    filename: row.filename,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    storagePath: row.storage_path,
+  }
+}
+
 /**
  * A step row → the editor's step shape.
  *
  * Works for both `sequence_steps` and `template_steps`: the two tables have
  * identical columns apart from their parent key, and the editor genuinely does
  * not care which one a step came from.
+ *
+ * `attachments` are passed in rather than read from the row, because they live in
+ * a join table that only some callers embed. Omitted → the property is absent,
+ * which means "not loaded" and is deliberately different from `[]`; see
+ * `SequenceStep.attachments`.
  */
-export function stepFromRow(row: SequenceStepRow | TemplateStepRow): SequenceStep {
+export function stepFromRow(
+  row: SequenceStepRow | TemplateStepRow,
+  attachments?: AttachmentRow[] | undefined
+): SequenceStep {
   return {
     id: row.id,
     kind: row.kind,
@@ -92,6 +112,7 @@ export function stepFromRow(row: SequenceStepRow | TemplateStepRow): SequenceSte
     subject: optional(row.subject),
     bodyHtml: optional(row.body_html),
     waitDays: optional(row.wait_days),
+    ...(attachments ? { attachments: attachments.map(attachmentFromRow) } : {}),
   }
 }
 
