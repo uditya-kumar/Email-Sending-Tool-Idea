@@ -205,6 +205,7 @@ export const MOCK_SENDERS: SenderAccount[] = [
     email: "uditya204@gmail.com",
     name: "Uditya Kumar",
     dailyLimit: 15,
+    status: "active",
   },
 ]
 

@@ -30,7 +30,7 @@ interface ComposeFlowProps {
   onLaunch: () => void
   onBack: () => void
   /** Connected Gmail address — the test send needs one to send from. */
-  senderEmail?: string
+  senderEmail?: string | undefined
 }
 
 /**

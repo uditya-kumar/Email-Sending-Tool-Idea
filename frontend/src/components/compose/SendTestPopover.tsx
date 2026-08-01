@@ -16,7 +16,7 @@ interface SendTestPopoverProps {
    * also what blocks the send. Doubles as the prefilled recipient, since a test
    * almost always goes to yourself.
    */
-  senderEmail?: string
+  senderEmail?: string | undefined
 }
 
 /** Loose sanity check; Gmail is the real validator. */

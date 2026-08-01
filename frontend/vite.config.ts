@@ -14,6 +14,10 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Domain types, the merge-tag renderer and the IST helpers are compiled by
+      // both packages from one source (see shared/). The server resolves the
+      // same files through tsconfig; Vite needs it spelled out here.
+      '@shared': path.resolve(__dirname, '../shared'),
     },
   },
 })

@@ -21,7 +21,7 @@ interface TemplatesPageProps {
   templates: EmailTemplate[]
   onChange: (templates: EmailTemplate[]) => void
   /** Connected Gmail address — the test send needs one to send from. */
-  senderEmail?: string
+  senderEmail?: string | undefined
 }
 
 /**
@@ -73,13 +73,15 @@ export function TemplatesPage({
     const created = newTemplate(`tpl-${templates.length + 1}-${templates.length}`)
     onChange([...templates, created])
     setActiveTemplateId(created.id)
-    setActiveStepId(created.steps[0].id)
+    setActiveStepId(created.steps[0]?.id ?? "")
   }
 
   function duplicateTemplate(id: string) {
     const idx = templates.findIndex((t) => t.id === id)
-    if (idx === -1) return
     const source = templates[idx]
+    // `idx === -1` and "index is in range" are the same check to the compiler
+    // here, so one guard on `source` covers both.
+    if (!source) return
     const newId = `tpl-copy-${templates.length}-${id}`
     const copy: EmailTemplate = {
       id: newId,

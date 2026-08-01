@@ -1,6 +1,8 @@
+import { Loader2 } from "lucide-react"
 import { useState } from "react"
 import { Toaster } from "@/components/ui/sonner"
 import { toast } from "sonner"
+import { LoginPage } from "@/components/auth/LoginPage"
 import { AppHeader, type NavView } from "@/components/layout/AppHeader"
 import { DatabasePage } from "@/components/database/DatabasePage"
 import { ComposeFlow } from "@/components/compose/ComposeFlow"
@@ -8,12 +10,11 @@ import { TemplatesPage } from "@/components/templates/TemplatesPage"
 import { SettingsPage } from "@/components/settings/SettingsPage"
 import { SenderLimitDialog } from "@/components/settings/SenderLimitDialog"
 import { ProfileDialog } from "@/components/settings/ProfileDialog"
+import { useAuth, signOut } from "@/lib/auth"
 import { fullName } from "@/lib/leads"
-import { supabase } from "@/lib/supabase"
 import {
   DEFAULT_SETTINGS,
   MOCK_LEADS,
-  MOCK_PROFILE,
   MOCK_SENDERS,
   MOCK_TEMPLATES,
   newSequenceForLead,
@@ -39,7 +40,32 @@ function navOrigin(view: AppView): NavView {
   return view === "templates" ? "templates" : "database"
 }
 
+/**
+ * Auth gate. Kept as a separate component from `Workspace` so that every hook
+ * below it can assume a session exists — the alternative is threading a
+ * `session | null` through the whole tree and null-checking it at each data call.
+ * Unmounting on sign-out also discards all in-memory state, which is what stops
+ * one account's leads from being visible after switching.
+ */
 export default function App() {
+  const auth = useAuth()
+
+  if (auth.status === "loading") {
+    return (
+      <div className="flex h-svh items-center justify-center bg-background">
+        {/* No text: this resolves from localStorage in a few milliseconds, and a
+            "Loading…" that flashes once per reload reads as jank. */}
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (auth.status === "signed-out") return <LoginPage />
+
+  return <Workspace initialProfile={auth.profile} />
+}
+
+function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
   const [view, setView] = useState<AppView>("database")
   /**
    * The page Settings was opened from, so its Back button returns there instead
@@ -54,8 +80,11 @@ export default function App() {
     seedSequences(MOCK_LEADS)
   )
   const [templates, setTemplates] = useState<EmailTemplate[]>(MOCK_TEMPLATES)
-  /** Who's logged in. Survives disconnecting the sending account. */
-  const [profile, setProfile] = useState<UserProfile>(MOCK_PROFILE)
+  /**
+   * Who's logged in. Seeded from the real session rather than mock data, and
+   * held in state because the Profile dialog can edit the display name.
+   */
+  const [profile, setProfile] = useState<UserProfile>(initialProfile)
   const [senders, setSenders] = useState<SenderAccount[]>(MOCK_SENDERS)
   const [settings, setSettings] = useState<SequenceSettings>(DEFAULT_SETTINGS)
   const [editingSenderId, setEditingSenderId] = useState<string | null>(null)
@@ -113,19 +142,12 @@ export default function App() {
   }
 
   /**
-   * Signs out via Supabase Auth when it's configured; the UI is still built on
-   * mock data, so without env vars there's no session to end — say so instead of
-   * pretending it worked.
+   * Sign out. No local state to clear on success — `onAuthStateChange` swaps this
+   * whole component for the login screen, which discards it.
    */
   async function logout() {
-    if (!supabase) {
-      toast.info("Sign-in isn't connected yet", {
-        description: "Supabase Auth still needs wiring up — nothing to log out of.",
-      })
-      return
-    }
-    const { error } = await supabase.auth.signOut()
-    if (error) toast.error("Couldn't log out", { description: error.message })
+    const message = await signOut()
+    if (message) toast.error("Couldn't log out", { description: message })
   }
 
   return (

@@ -23,4 +23,9 @@ dist-ssr
 *.sln
 *.sw?
 
-.env.local
+# Every env file except the committed template. The publishable key is designed
+# to ship in the bundle, so this is hygiene rather than secrecy — but the rule
+# should not depend on remembering which keys are safe.
+.env
+.env.*
+!.env.example

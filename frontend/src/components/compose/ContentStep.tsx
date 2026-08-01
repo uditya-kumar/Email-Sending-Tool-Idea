@@ -26,7 +26,7 @@ interface ContentStepProps {
   onChangeDelay: (id: string, waitDays: number) => void
   onChangeSendTime: (hhmm: string) => void
   /** Connected Gmail address — the test send needs one to send from. */
-  senderEmail?: string
+  senderEmail?: string | undefined
 }
 
 /** Compose step 1 — sequence sidebar + email composition canvas for one recipient. */

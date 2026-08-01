@@ -17,8 +17,8 @@ function ProfileRow({
   multiline,
 }: {
   label: string
-  value?: string
-  multiline?: boolean
+  value?: string | undefined
+  multiline?: boolean | undefined
 }) {
   return (
     <p className="text-muted-foreground">

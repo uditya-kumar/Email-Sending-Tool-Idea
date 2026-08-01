@@ -18,6 +18,35 @@ cutover.
 
 ---
 
+## Where this stands
+
+**`server/` is complete** — every file in `BACKEND_PLAN.md` §5 exists, `npm run typecheck` and
+`npm run build` are clean, and the compiled output boots and serves. What's verified by actually
+running it, versus what still needs a real Gmail account, is marked per phase below.
+
+Verified end to end against the running server: `/healthz`, the open pixel, the signed click redirect
+and its five refusal paths, the cron secret, unauthenticated `/api/*` → 401, unknown route → 404 JSON,
+CORS, the IST scheduling math (12 cases), the merge-tag renderer, and the crypto round-trip.
+
+**Setup is done** (all by hand, confirmed): public signups disabled, one confirmed user in
+`auth.users`, its `settings` row seeded, both `.env` files written, and the Google Cloud project set up
+with the Gmail API enabled, 5 scopes, an **In production** consent screen and a Web OAuth client.
+The server boots with 15 env vars and answers `/healthz`.
+
+**Phase 3 is done** — login works against the live project. What's left:
+
+1. **Phase 4: real CRUD replacing `mock-data.ts`**, smallest slice first (`settings` → `leads` →
+   `templates` → `sequence_steps`). This is the bulk of the remaining work.
+2. **The four places that call the server** — the Connect button, `SendTestPopover`, launch/cancel, and
+   the attach control (`BACKEND_PLAN.md` §10 has the full list).
+
+The one thing still unproven is the part that matters most — that a real email arrives, that a
+follow-up lands in the same thread, and that a reply cancels it. The fastest way to derisk it is to
+wire the Connect button (Phase 5's frontend half) and fire one `/api/test-send` at your own inbox
+**before** building much else on top of the send path.
+
+---
+
 ## Type safety — the rules
 
 TypeScript alone would not catch what actually breaks this server, because **supabase-js returns
@@ -62,16 +91,20 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 
 ---
 
-## Phase 0 — Server skeleton
+## Phase 0 — Server skeleton ✅
 *Frontend untouched.*
 
-- [ ] **Align the TypeScript version across packages** — server is `^7.0.2`, frontend is `~6.0.2`.
+- [x] **Align the TypeScript version across packages** — both pinned to `6.0.3`.
       `shared/` is compiled by *both*, so a mismatch produces errors that reproduce in one package
-      and not the other. Pin both to the same exact version.
-- [ ] `server/package.json`: `"type": "module"`; add `nodemailer`, `zod`, `pino`, `pino-pretty`, `cheerio`, `@types/nodemailer`; scripts:
+      and not the other.
+- [x] `server/package.json`: `"type": "module"`; add `nodemailer`, `zod`, `pino`, `pino-pretty`, `cheerio`, `@types/nodemailer`; scripts:
       `dev` = `tsx watch src/index.ts`, `build` = `tsc`, `start` = `node dist/server/src/index.js`,
-      **`typecheck` = `tsc --noEmit`**
-- [ ] **Replace `server/tsconfig.json`** — it's currently untouched `tsc --init` scaffold with
+      **`typecheck` = `tsc --noEmit`**.
+      Also needed an `overrides` pin on `google-auth-library@10.5.0`: `googleapis` and its own
+      `googleapis-common` request different ranges, npm installs **two** copies, and `OAuth2Client`
+      has private fields — so structural matching doesn't apply and passing our client to
+      `google.gmail({ auth })` is a type error until the duplicate is collapsed.
+- [x] **Replace `server/tsconfig.json`** — it was untouched `tsc --init` scaffold with
       `"types": []` (no `process`, no `Buffer`), a stray `jsx: react-jsx`, library-only
       `declaration`/`declarationMap`, and no `include`/`rootDir`/`outDir`:
   ```jsonc
@@ -94,26 +127,55 @@ every optional field needs conditional-spread form. Know this before Phase 5.
     "include": ["src", "../shared"]
   }
   ```
-- [ ] `server/src/env.ts` — **zod-parsed** `process.env`, exported as one frozen `env` object.
+- [x] `server/src/env.ts` — **zod-parsed** `process.env`, exported as one frozen `env` object.
       Required: both Supabase vars, all three Google vars, `TOKEN_ENCRYPTION_KEY` (assert 32 bytes
       after base64-decode), `TRACKING_HMAC_SECRET`, `FRONTEND_URL`. This is the **only** file that
       reads `process.env`.
-- [ ] `server/src/db.ts` — supabase-js with `SUPABASE_SECRET_KEY`; **untyped for now**, gets its
-      `<Database>` generic in Phase 2 once the schema exists
-- [ ] `server/src/crypto.ts` — AES-256-GCM `encrypt`/`decrypt` + HMAC `sign`/`verify`
-- [ ] `server/src/index.ts` — Express, `cors({ origin: FRONTEND_URL })`, `/healthz`, pino logger
-- [ ] `server/.env.example` (see bottom of this file)
-- [ ] **Verify:** `npm run typecheck` clean → `npm run dev` → `curl localhost:8080/healthz` = 200;
-      delete a required env var and confirm the server **refuses to boot** with the field name in the error
+      Gotcha found while wiring `.env.example`: dotenv turns a bare `CRON_SECRET=` into `""`, which
+      is *present* as far as zod is concerned — so `.optional()` doesn't apply and `.min(16)` fails.
+      A freshly copied template refused to boot on exactly the fields you were right to leave blank.
+      Blank values are therefore stripped before parsing.
+- [x] `server/src/db.ts` — supabase-js with `SUPABASE_SECRET_KEY`, typed `<Database>` (Phase 2 landed
+      first, so it was never untyped). Plus `unwrap` / `unwrapRequired` / `unwrapMany` so no call site
+      repeats `if (error) throw` — the ones that forget read a failed query as an empty result, which
+      for the scheduler means "nothing due" rather than "the database is down".
+- [x] `server/src/crypto.ts` — AES-256-GCM `encrypt`/`decrypt` + HMAC `sign`/`verify` + constant-time
+      `secretsMatch`. **Verified:** round-trips, two encrypts of the same input differ (random IV),
+      and a tampered ciphertext throws `DecryptionError` rather than returning garbage.
+- [x] `server/src/logger.ts` — pino, with `redact` on every token path. Not decoration: this process
+      holds a Gmail refresh token and the Supabase secret key, and the easiest way to leak either is
+      to log an object that happens to contain one.
+- [x] `server/src/index.ts` — Express, `cors({ origin: FRONTEND_URL })`, `/healthz`, pino, graceful
+      SIGTERM shutdown, `trust proxy` (so `events.ip` isn't the load balancer's address), and
+      `releaseStaleClaims()` at boot to recover rows a crash left mid-claim
+- [x] `server/.env.example` (see bottom of this file)
+- [x] **Verified:** `npm run typecheck` clean; `npm run build` emits and the compiled output boots;
+      `/healthz` = 200; with a required var removed the server **refuses to boot** and names the
+      field. Also confirmed `rewriteRelativeImportExtensions` really works — the emitted
+      `dist/server/src/data/leads.js` imports `"../../../shared/mappers.js"`, and the full import
+      graph resolves under plain `node`.
 
-## Phase 1 — `shared/` extraction
+## Phase 1 — `shared/` extraction ✅
 *No behaviour change. First, because the server must import the exact renderer the Preview step uses
 — otherwise previews lie about what actually gets sent.*
 
-- [ ] Move to `shared/`: `types.ts`, `merge-tags.ts`, `time.ts`, `sequence.ts`, `leads.ts`
-- [ ] `frontend/src/lib/*.ts` become one-line re-exports → **zero component import changes**
-- [ ] `@shared/*` alias in `frontend/tsconfig.app.json`, `frontend/vite.config.ts`, `server/tsconfig.json`
-- [ ] **Verify:** `cd frontend && npm run build` passes; UI visually identical
+- [x] Move to `shared/`: `types.ts`, `merge-tags.ts`, `time.ts`, `sequence.ts`, `leads.ts`
+- [x] `frontend/src/lib/*.ts` become one-line re-exports → **zero component import changes**
+- [x] `@shared/*` alias in `frontend/tsconfig.app.json`, `frontend/tsconfig.json`,
+      `frontend/vite.config.ts`. **The server deliberately does *not* use the alias**: `tsc` does not
+      rewrite path aliases on emit, so `@shared/x` would type-check and then crash at runtime.
+      It uses relative `../../shared/x.ts` specifiers with `rewriteRelativeImportExtensions`.
+- [x] `shared/package.json` — needed, not cosmetic: `shared/` sits outside both package roots, so
+      `import { DateTime } from "luxon"` inside it resolves to nothing for Vite *and* Node. A local
+      manifest with `luxon` + `"type": "module"` fixes both consumers at once.
+- [x] Status unions are now **derived from the generated DB enums**
+      (`LeadStatus = Enums<"lead_status">`) rather than hand-written, which is what turned the
+      four missing `LeadStatus` cases into a compile error in `StatusBadge` instead of a runtime
+      crash. Also added: `SchedulerSettings`, `AccountStatus`, `SendStatus`, `EventType`,
+      `Lead.repliedAt`, `SenderAccount.status`.
+- [x] `shared/sequence.ts` gains `nextEmailAfter()` + `firstEmailStep()` — the whole follow-up
+      scheduling rule, kept database-free so it's testable in isolation
+- [x] **Verify:** `cd frontend && npm run build` passes (`tsc -b` clean + vite build)
 
 ## Phase 2 — Database ✅ *applied to project `lqetvxapgotsayqrjkan`*
 *No frontend change.*
@@ -145,25 +207,69 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 - [ ] Create your one user in the Supabase dashboard (Authentication → Users → Add user), **then**
       re-run the seed at the bottom of `schema.sql` to create your `settings` row —
       `auth.users` is currently empty, so that insert matched nothing
-- [ ] Add an npm script `db:types` so regenerating is one command
-- [ ] `server/src/db.ts` → `createClient<Database>(…)` *(needs Phase 0 to exist first)*
+- [x] Add an npm script `db:types` so regenerating is one command → `server/scripts/gen-db-types.mjs`.
+      Reads the project ref out of `SUPABASE_URL` so it isn't duplicated anywhere, writes to
+      `shared/`, and refuses to overwrite a working types file if the CLI output doesn't contain
+      `export type Database` (it exits 0 while printing diagnostics in some failure modes, and
+      clobbering the file would break both packages' builds at once)
+- [x] `server/src/db.ts` → `createClient<Database>(…)`
 - [ ] `frontend/src/lib/supabase.ts` → `createClient<Database>(…)` too
-- [ ] Derive row types instead of hand-writing them:
-      `type SendRow = Database['public']['Tables']['sends']['Row']`
-      (this is where `GmailAccountRow` and `SendRow` from `BACKEND_PLAN.md` §6 come from)
+- [x] Derive row types instead of hand-writing them — `db.ts` exports `GmailAccountRow`, `LeadRow`,
+      `SendRow`, `SequenceStepRow`, `TemplateStepRow`, `SettingsRow`, `AttachmentRow`, `EventRow`
+      via `Tables<"…">`, plus `SendInsert` / `SendUpdate` / `EventInsert` / `GmailAccountUpdate`
 
 ## Phase 3 — Auth gate + mappers
 *Mock data still behind it.*
 
-- [ ] Login screen — email magic link is enough; `logout()` (`App.tsx:120`) already handles the rest
-- [ ] `server/src/auth/requireUser.ts` — verify the Supabase JWT from the `Authorization` header
-- [ ] `frontend/src/lib/mappers.ts` — snake_case ↔ camelCase in exactly one place.
-      Type each mapper as `(row: LeadRow) => Lead` — **generated** row type on one side, the existing
-      `shared/types.ts` interface on the other. That signature is what makes a schema change surface
-      as a compile error in the mapper instead of an `undefined` in the UI.
-- [ ] `server/src/http/validate.ts` — small `zod` body-validation middleware (parse → typed handler,
-      400 with the failing field path). Reused by every route in Phases 6 and 8.
-- [ ] **Verify:** sign in → Database page → sign out
+- [x] Login screen — **email + password**, not the magic link this originally called for. Supabase's
+      built-in mailer is capped at a couple of messages an hour on the free tier and only delivers to
+      project-team addresses, which is enough to lock yourself out mid-afternoon. With signups disabled
+      and the account created by hand in the dashboard, a password gives up nothing.
+      - `frontend/src/lib/auth.ts` — `useAuth()` (`getSession` + `onAuthStateChange`), `signIn`,
+        `signOut`. The `loading` state is what stops the login form flashing on every reload, since
+        restoring the persisted session is async. `signIn` returns a message instead of throwing, and
+        rewrites Supabase's deliberately-vague "Invalid login credentials" to also name the likeliest
+        cause here: a dashboard user created without **Auto Confirm User**.
+      - `frontend/src/components/auth/LoginPage.tsx` — no sign-up and no password reset, both of which
+        would need the mailer that doesn't work. A real `<form>` so Enter submits and password managers
+        fill it.
+      - `App.tsx` splits into `App` (auth gate) + `Workspace`, so every hook below the gate can assume a
+        session exists rather than null-checking one threaded through the tree. Unmounting on sign-out
+        is also what discards all in-memory state.
+- [x] `frontend/src/lib/supabase.ts` — `createClient<Database>`. Without the generic every
+      `.from("leads")` returns `any`, and a column typo becomes a blank field in a *sent email* rather
+      than a compile error; this one line is what makes `shared/mappers.ts` check against the real
+      schema. Now **throws at module load** when env vars are missing instead of exporting `null` — a
+      null client renders an empty database and silently drops writes, which is indistinguishable from
+      "you have no leads". Also exports `accessToken()` for the four calls to our own server, read
+      fresh from `getSession()` each time because these expire hourly.
+- [x] **Frontend strictness raised to match `server/tsconfig.json`** — `strict`,
+      `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitReturns`,
+      `noImplicitOverride`. `strict` had been **off entirely**, and `shared/` is compiled by both
+      projects: the looser side was silently accepting what the stricter side rejects. Found it while
+      about to write code where every Supabase call returns `data: T | null`.
+      Cost 10 small edits: optional props widened to `?: T | undefined` (with
+      `exactOptionalPropertyTypes`, `?: T` refuses the explicit `undefined` a React caller passes),
+      `MERGE_ATTRIBUTES` retyped as a non-empty tuple so `[0]` is known to exist, and one real
+      index guard in `duplicateTemplate`.
+- [x] `server/src/auth/requireUser.ts` — verify the Supabase JWT from the `Authorization` header
+- [x] `shared/mappers.ts` — snake_case ↔ camelCase in exactly one place. Landed in `shared/` rather
+      than `frontend/src/lib/` because the **server** needs the identical conversion: the renderer
+      takes a domain `Lead`, so a server-side second implementation would be the same class of drift
+      the shared renderer exists to prevent. Typed `(row: LeadRow) => Lead`, generated row type on
+      one side and `shared/types.ts` on the other.
+- [x] `server/src/http/` — `errors.ts` (one class per HTTP outcome), `schemas.ts` (the reusable zod
+      pieces), `handler.ts` (`route()` + the terminal `errorMiddleware`). Went further than a
+      body-validation middleware: `route<TBody, TParams, TQuery>(schemas, handler)` hands the handler
+      an already-parsed, **typed** body/params/query, which is what removes every `as` and every
+      `req.body.foo!` from the route files. `errorMiddleware` is the single place a status code is
+      decided, so no route wraps a send in a try/catch to get the right one.
+- [x] **Verify:** driven in a real browser against the live project — the login screen renders with no
+      console errors, submit stays disabled while empty, a wrong password round-trips to Supabase Auth
+      and surfaces inline in an `aria-live` region, and the form re-enables for a retry. That failing
+      request is itself the proof that `frontend/.env` and the publishable key are correct.
+      Still unverified: the signed-in path (needs the password, which is yours) — sign in → Database →
+      sign out.
 
 ## Phase 4 — Real CRUD, one slice per commit
 *Smallest surface first so the mapper layer is proven before the big tables.*
@@ -180,28 +286,58 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 - [ ] **Verify:** create a lead → hard reload → it's still there
 
 ## Phase 5 — Google OAuth connect
-- [ ] Google Cloud: new project → enable **Gmail API** → consent screen with the 5 scopes → **Publish → In production** (do *not* submit for verification) → Web OAuth client with redirect `http://localhost:8080/api/auth/google/callback`
-- [ ] `server/src/auth/google.ts`
-  - `GET /api/auth/google` — insert `oauth_states` row, redirect with `access_type=offline&prompt=consent&state=…`
-  - `GET /api/auth/google/callback` — verify+delete state, exchange code, `oauth2.userinfo.get()`, upsert `gmail_accounts` with the refresh token **encrypted**, redirect to `FRONTEND_URL/settings?connected=1`
-  - `POST /api/accounts/:id/disconnect` — `revokeToken` then delete
-- [ ] `server/src/email/index.ts` — `mailerFor(account)` + `forgetAccount(id)`; per-account cached `OAuth2Client` whose `tokens` event persists refreshed access/refresh tokens
-- [ ] Wire the "Add account" button (`SettingsPage.tsx:251`) → `${VITE_SERVER_URL}/api/auth/google`
-- [ ] Render `status='needs_reauth'` as a Reconnect badge
+*Server done; the Google Cloud project and the frontend button are still open.*
+
+- [x] Google Cloud: new project → enable **Gmail API** → consent screen with the 5 scopes → **Publish → In production** (do *not* submit for verification) → Web OAuth client with redirect `http://localhost:8080/api/auth/google/callback`
+- [x] `server/src/auth/google.ts`
+  - `GET /api/auth/google` — insert `oauth_states` row, redirect with `access_type=offline&prompt=consent&state=…`.
+    Authenticated by `?token=` rather than a header: this is a **browser navigation**, which carries none.
+  - `GET /api/auth/google/callback` — verify+delete state, exchange code, `oauth2.userinfo.get()`,
+    store `gmail_accounts` with the refresh token **encrypted**, redirect to `FRONTEND_URL/settings?connected=1`.
+    Always ends in a redirect, never JSON — the browser is showing whatever this returns.
+  - `POST /api/accounts/:id/disconnect` — `revokeToken` then delete, in that order
+  - The `state` is **HMAC-signed and carries the user id**, because `oauth_states` has no `user_id`
+    column and the callback has no session to read one from. The nonce row is still written, so the
+    state is single-use rather than replayable forever.
+  - Not an `.upsert()`: `gmail_accounts` uniqueness is an **expression index** on
+    `(user_id, lower(email))`, which PostgREST's `on_conflict` cannot name (42P10). Manual
+    find-then-update-or-insert with `.ilike()` instead.
+  - No refresh token in the response → `ConflictError(…, "no_refresh_token")`, since without one the
+    account can never send again and storing it would look like success.
+- [x] `server/src/email/accounts.ts` — `mailerFor(account)`, `replyWatcherFor`, `oauthClientFor`,
+      `markNeedsReauth`, `forgetAccount`; per-account cached `OAuth2Client` whose `tokens` event
+      persists refreshed access/refresh tokens
+- [ ] Wire the "Add account" button (`SettingsPage.tsx:251`) → `${VITE_SERVER_URL}/api/auth/google?token=…`
+- [ ] Render `status='needs_reauth'` as a Reconnect badge — the server already answers
+      `409 { code: "needs_reauth" }` from every route that touches a dead account
 - [ ] **Verify:** click Connect → consent (click through the unverified-app warning once) → your Gmail shows in Settings with `daily_limit` 15
 
 ## Phase 6 — First real email
-- [ ] `server/src/email/gmail-mailer.ts` — `GmailMailer` per `BACKEND_PLAN.md` §6
+*Server done; needs a connected Gmail (Phase 5) to actually deliver.*
+
+- [x] `server/src/email/gmail-mailer.ts` — `GmailMailer` per `BACKEND_PLAN.md` §6
   - `readMessageId()` after every send — **Gmail always overwrites the `Message-ID`**, so Nodemailer's value must never be persisted
-  - `GmailAuthError` / `GmailRateLimitError` so the scheduler can branch
+  - `GmailAuthError` / `GmailRateLimitError` / `GmailMessageError` so the scheduler can branch
   - **No `!` and no `as` on Gmail responses.** `googleapis` types `data.id` / `data.threadId` as
     `string | null | undefined` and that's accurate — branch and throw, so a missing id can never
     reach the `sends` row as `undefined`. This is the third zod/validation boundary.
-- [ ] `server/src/tracking/tracking-links.ts` — HMAC-signed pixel + click URLs
-- [ ] `server/src/render/email-renderer.ts` — `renderTags` from `@shared/merge-tags`, pixel + `cheerio` link rewrite, both gated on `settings`
-- [ ] `POST /api/test-send { stepId, to }` — no cap, no tracking, no scheduler.
-      Body via the Phase 3 zod middleware (`stepId` uuid, `to` email) — this endpoint sends real mail
-      from a browser-supplied payload, so it's the one that most needs parsing rather than casting.
+  - `nodemailer` streamTransport (`buffer: true`, `newline: "windows"`) used purely as a MIME builder
+    → `base64url` → Gmail `raw`, with the 5 MB ceiling checked before the call
+- [x] `server/src/tracking/tracking-links.ts` — HMAC-signed pixel + click URLs. The signature covers
+      `trackingId` **and** the URL together, so a signature lifted from one email can't be replayed to
+      redirect a different one.
+- [x] `server/src/render/email-renderer.ts` — `renderTags` from `shared/merge-tags.ts`, pixel +
+      `cheerio` link rewrite, both gated on `settings`; hand-rolled `htmlToText` so link URLs survive
+      into the plain-text part.
+      **Verified:** tags resolve, `{{job_title:"leader"}}` falls back, values are HTML-escaped
+      (`Acme & Co` → `Acme &amp; Co`), a tag with neither value nor fallback renders its label,
+      `mailto:` is left alone by the rewriter, and `<p></p>` throws `EmptyStepError`.
+- [x] `POST /api/test-send { stepId, to, leadId? }` — no cap, no tracking, no `sends` row.
+      Every id is re-resolved server-side with an explicit ownership filter rather than trusted from
+      the body; this endpoint sends real mail from a browser-supplied payload, so it's the one that
+      most needs parsing rather than casting. Subject is prefixed `[TEST] `.
+      With no `leadId` (the Templates page) it renders against an all-empty placeholder lead, so tags
+      fall through to their own fallbacks — which is exactly what the Preview step shows.
 - [ ] Wire `SendTestPopover.tsx:41`
 - [ ] **Verify:** a merge-tagged HTML email with resolved fallbacks lands in your own inbox
 
@@ -210,34 +346,91 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 
 - [ ] Attach control on the email step in `ContentStep` → upload to Storage → `attachments` + `step_attachments`
 - [ ] Cap uploads at ~4 MB so `raw` never crosses the 5 MB `messages.send` ceiling
-- [ ] `server/src/storage/attachment-store.ts` → `fetchForStep()` returns Buffers for MIME
+      *(the bucket already enforces this; the UI needs to fail politely rather than on a 413)*
+- [x] `server/src/storage/attachment-store.ts` → `fetchForStep()` / `fetchForTemplateStep()` return
+      Buffers for MIME. Two methods because the same step id can live in either `step_attachments` or
+      `template_step_attachments`, so the caller says which — `test-send` gets that from its own
+      step lookup rather than guessing.
 - [ ] **Verify:** test-send arrives with the PDF attached and openable
 
 ## Phase 8 — Scheduler (opening email only)
-- [ ] `server/src/scheduler/schedule.ts` — `firstSendAt()`, `nextAllowedDay()`
-      ⚠️ `Weekday` is 0=Mon…6=Sun but Luxon is 1=Mon…7=Sun; the `-1` is load-bearing. Run with `TZ=UTC`.
-- [ ] `server/src/scheduler/send-queue.ts` — `claimDue()` via `FOR UPDATE SKIP LOCKED`, `markSent`, `markFailed`, `reschedule`, `cancelPendingFor`
-- [ ] `POST /api/leads/:id/launch` + `POST /api/leads/:id/cancel` — replaces `launchLead()`'s local state; returns the real computed `scheduled_at` for the toast
-- [ ] `server/src/scheduler/tick.ts` — refresh tokens → daily cap → claim → weekday gate → stale-send grace → render → send → record → jitter
-- [ ] Drive it with `node-cron` `* * * * *` **and** expose `POST /api/cron/tick` behind `CRON_SECRET` (same function — makes the deferred hosting choice a config change, not a rewrite)
+*Server done; the end-to-end timing test needs a connected Gmail and real leads.*
+
+- [x] `server/src/scheduler/schedule.ts` — `firstSendAt()`, `nextAllowedDay()`, `followUpSendAt()`,
+      `rescheduleStaleAt()`, `isStale()`, `daysFor()`, `isAllowedDay()`, `jitterMs()`.
+      Deliberately DB-free with an injectable `now`, so it's testable without waiting for a Tuesday.
+      ⚠️ `Weekday` is 0=Mon…6=Sun but Luxon is 1=Mon…7=Sun; the `-1` is load-bearing and centralised
+      in `toWeekday()`. Run with `TZ=UTC`.
+      **Verified against a known Monday (2026-08-03):** 08:00 → today 09:30; 10:00 → tomorrow;
+      Thursday-after-slot → skips Fri/Sat/Sun to Monday; `waitDays: 0` → next day, *not* the same
+      minute; `followUpDays` allows a Friday that `outreachDays` pushes to Monday; 00:30 IST maps to
+      19:00 UTC the previous day; empty day set → `NoAllowedDayError`; `"25:99"` → `InvalidSendTimeError`.
+- [x] `server/src/scheduler/send-queue.ts` — the **only** writer to `sends`. `claimDue()` via the
+      `claim_due_sends` RPC (`FOR UPDATE SKIP LOCKED`), `sentToday`, `markSent`, `markFailed` with
+      `[2, 10, 60]`-minute backoff, `markPermanentlyFailed`, `cancel`, `reschedule`, `enqueue`,
+      `cancelPendingFor`, `lastSentFor`, `findByTrackingId`, `releaseStaleClaims`.
+      `markFailed` always returns a row to `pending` — leaving it `sending` would mean no future claim
+      ever matches it again. `enqueue` upserts with `ignoreDuplicates` on `(lead_id, step_position)`,
+      which is what makes a double-clicked Launch harmless.
+- [x] `POST /api/leads/:id/launch` + `POST /api/leads/:id/cancel` (`server/src/routes/leads.ts`) —
+      replaces `launchLead()`'s local state; returns the real computed `scheduled_at` for the toast.
+      Launch validates everything that would otherwise fail silently three days later: already
+      replied, already launched, no sequence, no email step, empty subject, empty body, no/ambiguous
+      account. Cancel only returns the lead to `draft` if nothing has actually gone out yet.
+      Plus `GET /api/leads/:id/sends` for the per-lead queue state.
+- [x] `server/src/scheduler/tick.ts` — tokens → **replies** → daily cap → claim → weekday gate →
+      stale-send grace → render → send → record → enqueue next → jitter. Replies are checked *before*
+      sending, or a reply from 40 seconds ago still gets a follow-up. An in-process `running` flag
+      stops `node-cron` stacking ticks that a jittered run outlives.
+- [x] Drive it with `node-cron` `* * * * *` (timezone pinned to UTC) **and** expose
+      `POST /api/cron/tick` behind `CRON_SECRET` — same function, so the deferred hosting choice is a
+      config change rather than a rewrite. `CRON_SECRET` being optional means the route **fails
+      closed**: unset → 403, never an open trigger. Comparison is constant-time.
+      **Verified:** wrong secret → 403, correct secret reaches `runTick`, `Authorization: Bearer` and
+      `X-Cron-Secret` both accepted, no secret → 403.
 - [ ] **Verify:** set a lead's IST time ~2 min out, watch it send and flip to `sent`; kill and restart the server mid-run and confirm no double-send
 
 ## Phase 9 — Follow-ups
-- [ ] `enqueueNextStep()` — create follow-up N+1 **only after N is actually sent**, so delays are relative to reality and not-yet-sent steps stay editable
-- [ ] Threading needs all three or it silently breaks: identical `Subject`, `In-Reply-To`/`References` from the stored `rfc822_message_id`, and `threadId`
+*Server done.*
+
+- [x] `enqueueNextStep()` — creates follow-up N+1 **only after N is actually sent**, so delays are
+      relative to reality and not-yet-sent steps stay editable. The rule itself lives in
+      `shared/sequence.ts` (`nextEmailAfter`), database-free and therefore readable.
+- [x] Threading needs all three or it silently breaks: identical `Subject`, `In-Reply-To`/`References`
+      from the stored `rfc822_message_id`, and `threadId`. The parent's **stored** subject is reused
+      verbatim rather than re-rendered — a lead edited since the opening email would otherwise produce
+      a slightly different subject and Gmail would start a new thread.
 - [ ] **Verify:** shrink a wait to 1 day (or minutes temporarily) — follow-up #1 appears **inside the same Gmail thread**
 
 ## Phase 10 — Reply detection
-- [ ] `server/src/email/reply-watcher.ts` — `threads.get` metadata; any message whose `From` ≠ the account is a reply
-- [ ] Runs at the **top** of the tick, before sending — otherwise a reply from 40 seconds ago still gets a follow-up
-- [ ] Sets `leads.replied_at` + `status='replied'`, inserts an `events` row, cancels that lead's pending `sends`
+*Server done.*
+
+- [x] `server/src/email/reply-watcher.ts` — `threads.get` metadata; any message whose `From` ≠ the
+      account is a reply
+- [x] Runs at the **top** of the tick, before sending — otherwise a reply from 40 seconds ago still
+      gets a follow-up
+- [x] Sets `leads.replied_at` + `status='replied'`, inserts an `events` row, cancels that lead's
+      pending `sends`. `processSend` re-checks `repliedAt` after the claim too, for a reply that
+      arrived in the window between claiming and sending.
 - [ ] **Verify:** reply from another account → pending follow-ups become `cancelled`
 
 ## Phase 11 — Tracking
-- [ ] `GET /t/o/:trackingId.gif` — 1×1 pixel, public, no auth
-- [ ] `GET /t/c/:trackingId?u=…&s=…` — HMAC-verified redirect (unsigned = open redirect for spammers)
-- [ ] Enable via the existing `trackOpens` / `trackClicks` toggles
-- [ ] Filter `GoogleImageProxy` user agents, dedupe opens per `send_id` — opens are noise, clicks and replies are signal
+*Server done; the tunnel test is still open.*
+
+- [x] `GET /t/o/:trackingId.gif` — 1×1 pixel (42-byte GIF89a), public, no auth. Mounted **before**
+      the CORS middleware: an image fetched by a mail client sends no `Origin`, and must not be gated
+      on one. Writes the response first and records second, so a slow database can't delay the image.
+- [x] `GET /t/c/:trackingId?u=…&s=…` — HMAC-verified redirect (unsigned = open redirect for spammers).
+      **Verified:** a correctly signed link 302s to its destination; one flipped character in the
+      signature → 400; the same signature replayed onto a *different* tracking id → 400; a
+      correctly-signed `javascript:` URL → 400, not a redirect (the protocol is re-checked after
+      decoding, since a stored bad URL would have been signed just as happily); a non-UUID id → 400
+      rather than a 22P02 out of Postgres.
+- [x] Enable via the existing `trackOpens` / `trackClicks` toggles — `emailRenderer` gates both.
+- [x] Filter `GoogleImageProxy` user agents, dedupe opens per `send_id` (10 s window) — opens are
+      noise, clicks and replies are signal. Clicks are deliberately *not* deduped: a second click is a
+      real second click. `recordOpen` never throws, because the alternative is a broken-image icon in
+      a cold email.
 - [ ] Surface events per lead in the UI
 - [ ] **Verify:** `cloudflared tunnel --url http://localhost:8080` (Gmail can't fetch a pixel from `localhost`), point `TRACKING_BASE_URL` at it, click a link → an `events` row appears
 

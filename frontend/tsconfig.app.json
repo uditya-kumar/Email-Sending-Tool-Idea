@@ -8,7 +8,8 @@
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@shared/*": ["../shared/*"]
     },
 
     /* Bundler mode */
@@ -19,11 +20,28 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    /* ── Strictness ───────────────────────────────────────────────────────────
+     * Deliberately identical to server/tsconfig.json. shared/ is compiled by
+     * both projects from the same source, so a flag enabled on one side and not
+     * the other means shared code type-checks under two different sets of rules
+     * — and the looser side silently accepts what the stricter side rejects.
+     *
+     * `exactOptionalPropertyTypes` is why optional props are declared
+     * `?: T | undefined` throughout: with it on, `?: T` refuses an explicit
+     * `undefined`, which is exactly what a React caller passes when it spreads
+     * an absent value.
+     */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+    "noImplicitOverride": true,
+
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src", "../shared"]
 }

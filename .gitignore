@@ -1,0 +1,16 @@
+# Rules that must hold in every package, including shared/, which has no
+# .gitignore of its own. frontend/ and server/ keep their own files for
+# build-output paths specific to each.
+
+node_modules/
+dist/
+
+# Never a committed env file except the templates.
+.env
+.env.*
+!.env.example
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log

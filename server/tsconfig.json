@@ -1,44 +1,49 @@
 {
-  // Visit https://aka.ms/tsconfig to read more about this file
   "compilerOptions": {
-    // File Layout
-    // "rootDir": "./src",
-    // "outDir": "./dist",
+    /* ── Layout ───────────────────────────────────────────────────────────────
+     * rootDir is ".." because shared/ is compiled by this project too, so the
+     * emitted tree is dist/server/src/** + dist/shared/**. That keeps every
+     * relative specifier between the two identical in src and in dist, which is
+     * why `npm start` points at dist/server/src/index.js.
+     */
+    "rootDir": "..",
+    "outDir": "./dist",
 
-    // Environment Settings
-    // See also https://aka.ms/tsconfig/module
+    /* ── Environment ──────────────────────────────────────────────────────── */
     "module": "nodenext",
-    "target": "esnext",
-    "types": [],
-    // For nodejs:
-    // "lib": ["esnext"],
-    // "types": ["node"],
-    // and npm install -D @types/node
+    "moduleResolution": "nodenext",
+    "target": "es2023",
+    "lib": ["ES2023"],
+    "types": ["node"],
 
-    // Other Outputs
-    "sourceMap": true,
-    "declaration": true,
-    "declarationMap": true,
+    /* Imports are written with an explicit `.ts` extension and rewritten to
+     * `.js` on emit. This is what lets shared/ be consumed by *both* the Vite
+     * frontend (which needs a resolvable specifier without a build step) and
+     * Node ESM (which needs a real extension) from one set of source files.
+     * A `paths` alias is deliberately NOT used: tsc does not rewrite aliases on
+     * emit, so `@shared/x` would type-check and then fail at runtime. */
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
 
-    // Stricter Typechecking Options
+    /* ── Strictness ───────────────────────────────────────────────────────── */
+    "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
 
-    // Style Options
-    // "noImplicitReturns": true,
-    // "noImplicitOverride": true,
-    // "noUnusedLocals": true,
-    // "noUnusedParameters": true,
-    // "noFallthroughCasesInSwitch": true,
-    // "noPropertyAccessFromIndexSignature": true,
-
-    // Recommended Options
-    "strict": true,
-    "jsx": "react-jsx",
+    /* ── Module hygiene ───────────────────────────────────────────────────── */
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
-    "skipLibCheck": true,
-  }
+
+    /* ── Output ───────────────────────────────────────────────────────────── */
+    "sourceMap": true,
+    "skipLibCheck": true
+  },
+  "include": ["src", "../shared"]
 }

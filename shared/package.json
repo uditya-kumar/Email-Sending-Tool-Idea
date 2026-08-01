@@ -1,0 +1,23 @@
+{
+  "name": "shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Domain types, merge-tag renderer and IST helpers compiled by BOTH frontend and server",
+  "//": [
+    "This package is never built or published on its own — `frontend` and `server`",
+    "each compile these .ts files as part of their own program. It exists only so",
+    "that bare specifiers (luxon) resolve: shared/ sits outside both package roots,",
+    "so Node/Vite/tsc walk up from a file here and would otherwise find nothing.",
+    "",
+    "\"type\": \"module\" is required, not cosmetic: under nodenext the server infers",
+    "each file's module format from the nearest package.json, and without it these",
+    "ESM sources would be treated as CommonJS and rejected by verbatimModuleSyntax."
+  ],
+  "type": "module",
+  "dependencies": {
+    "luxon": "^3.7.2"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.7.2"
+  }
+}
