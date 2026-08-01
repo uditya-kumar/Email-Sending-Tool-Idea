@@ -1,0 +1,613 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Cold Email Outreach Tool — full schema
+--  Single user. Frontend reads/writes directly with the PUBLISHABLE key under
+--  RLS; the Express server uses the SECRET key (bypasses RLS entirely).
+--
+--  Idempotent: safe to re-run. Paste into the Supabase SQL editor and Run.
+--  See BACKEND_PLAN.md §4 for the rationale behind each table.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ── extensions ─────────────────────────────────────────────────────────────
+create extension if not exists pgcrypto with schema extensions;  -- gen_random_uuid()
+
+
+-- ── enums ───────────────────────────────────────────────────────────────────
+--  Real enum types, not CHECK-constrained text, and the difference is load
+--  bearing: `supabase gen types` renders a CHECK'd text column as plain
+--  `string`, so `status = 'senting'` would compile clean and the row would
+--  simply never be claimed by the scheduler. Only true enums become TS literal
+--  unions, which is the whole reason we generate types.
+--
+--  Wrapped in exception blocks because `create type` has no IF NOT EXISTS.
+do $$
+begin
+  create type public.lead_status as enum
+    ('draft','scheduled','sending','sent','replied','failed','cancelled');
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  create type public.verification_status as enum
+    ('verified','not_verified','invalid');
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  create type public.send_status as enum
+    ('pending','sending','sent','failed','skipped','cancelled');
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  create type public.event_type as enum ('open','click','reply','bounce');
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  create type public.step_kind as enum ('email','delay');
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  create type public.account_status as enum ('active','needs_reauth','revoked');
+exception when duplicate_object then null;
+end $$;
+
+
+-- ── shared trigger: keep updated_at honest ──────────────────────────────────
+-- search_path is pinned: this fires on every write, and that is not a place to
+-- leave schema resolution up to the caller.
+create or replace function public.touch_updated_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  1. gmail_accounts — the connected sender (SenderAccount)
+--
+--  Holds the encrypted OAuth refresh token, so the frontend must NEVER be able
+--  to select from this table. Table privileges are revoked below; the browser
+--  reads the safe subset through gmail_accounts_public instead.
+-- ═══════════════════════════════════════════════════════════════════════════
+create table if not exists public.gmail_accounts (
+  id                       uuid primary key default gen_random_uuid(),
+  user_id                  uuid not null default auth.uid()
+                             references auth.users(id) on delete cascade,
+  email                    text not null,
+  display_name             text,
+  google_sub               text not null,
+
+  -- AES-256-GCM ciphertext, decrypted only in the Express server.
+  refresh_token_enc        text not null,
+  access_token_enc        text,
+  access_token_expires_at  timestamptz,
+
+  scopes                   text[] not null default '{}',
+  daily_limit              int  not null default 15
+                             check (daily_limit > 0 and daily_limit <= 500),
+  status                   public.account_status not null default 'active',
+
+  created_at               timestamptz not null default now(),
+  updated_at               timestamptz not null default now()
+);
+
+create unique index if not exists gmail_accounts_email_key
+  on public.gmail_accounts (user_id, lower(email));
+
+drop trigger if exists gmail_accounts_touch on public.gmail_accounts;
+create trigger gmail_accounts_touch before update on public.gmail_accounts
+  for each row execute function public.touch_updated_at();
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  2. leads — one recipient (Lead in shared/types.ts)
+-- ═══════════════════════════════════════════════════════════════════════════
+create table if not exists public.leads (
+  id                   uuid primary key default gen_random_uuid(),
+  user_id              uuid not null default auth.uid()
+                         references auth.users(id) on delete cascade,
+
+  company_name         text not null default '',
+  first_name           text not null default '',
+  last_name            text not null default '',
+  email                text not null
+                         check (email ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'),
+  personalization_line text not null default '',
+
+  -- "HH:mm" 24h in IST. Mirrors isValidIST() in shared/time.ts.
+  send_time_ist        text not null default '10:00'
+                         check (send_time_ist ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
+
+  job_title            text,
+  website              text,
+
+  verification         public.verification_status not null default 'not_verified',
+  status               public.lead_status not null default 'draft',
+
+  -- Set by reply detection. Non-null is what stops every pending follow-up.
+  replied_at           timestamptz,
+
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now()
+);
+
+-- One row per person: re-importing the same CSV must not duplicate a lead.
+create unique index if not exists leads_email_key
+  on public.leads (user_id, lower(email));
+create index if not exists leads_status_idx on public.leads (user_id, status);
+
+drop trigger if exists leads_touch on public.leads;
+create trigger leads_touch before update on public.leads
+  for each row execute function public.touch_updated_at();
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  3. templates + template_steps — reusable sequence blueprints (EmailTemplate)
+-- ═══════════════════════════════════════════════════════════════════════════
+create table if not exists public.templates (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null default auth.uid()
+               references auth.users(id) on delete cascade,
+  name       text not null default 'Untitled template',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists templates_touch on public.templates;
+create trigger templates_touch before update on public.templates
+  for each row execute function public.touch_updated_at();
+
+create table if not exists public.template_steps (
+  id          uuid primary key default gen_random_uuid(),
+  template_id uuid not null references public.templates(id) on delete cascade,
+  position    int  not null check (position >= 0),
+  kind        public.step_kind not null,
+  name        text not null default '',
+
+  -- Email steps: may be empty while being drafted (the frontend creates blank
+  -- follow-ups), so emptiness is validated at launch, not here.
+  subject     text,
+  body_html   text,
+
+  -- Delay steps only.
+  wait_days   int check (wait_days >= 0),
+
+  constraint template_steps_shape check (
+    (kind = 'delay' and wait_days is not null) or
+    (kind = 'email' and wait_days is null)
+  ),
+
+  -- DEFERRABLE so reordering steps inside one transaction doesn't trip the
+  -- constraint mid-update. Consequence: never ON CONFLICT on (template_id,
+  -- position) — upsert on the primary key instead.
+  constraint template_steps_position_key
+    unique (template_id, position) deferrable initially deferred
+);
+
+create index if not exists template_steps_template_idx
+  on public.template_steps (template_id, position);
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  4. sequence_steps — each lead's OWN copy of the sequence (SequencesByLead)
+--
+--  Deliberately not shared with template_steps: per-recipient personalization
+--  is the whole point, so applying a template COPIES rows in here.
+-- ═══════════════════════════════════════════════════════════════════════════
+create table if not exists public.sequence_steps (
+  id        uuid primary key default gen_random_uuid(),
+  lead_id   uuid not null references public.leads(id) on delete cascade,
+  position  int  not null check (position >= 0),
+  kind      public.step_kind not null,
+  name      text not null default '',
+  subject   text,
+  body_html text,
+  wait_days int check (wait_days >= 0),
+
+  constraint sequence_steps_shape check (
+    (kind = 'delay' and wait_days is not null) or
+    (kind = 'email' and wait_days is null)
+  ),
+  constraint sequence_steps_position_key
+    unique (lead_id, position) deferrable initially deferred
+);
+
+create index if not exists sequence_steps_lead_idx
+  on public.sequence_steps (lead_id, position);
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  5. attachments — the resume, in Supabase Storage
+-- ═══════════════════════════════════════════════════════════════════════════
+create table if not exists public.attachments (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null default auth.uid()
+                 references auth.users(id) on delete cascade,
+  filename     text not null,                 -- as the recipient sees it
+  storage_path text not null unique,           -- attachments/<uid>/<uuid>.pdf
+  mime_type    text not null,
+  -- Capped at 4 MB so the built MIME never crosses the 5 MB messages.send
+  -- limit (base64 inflates by ~33%).
+  size_bytes   int  not null check (size_bytes > 0 and size_bytes <= 4194304),
+  created_at   timestamptz not null default now()
+);
+
+create table if not exists public.step_attachments (
+  step_id       uuid not null references public.sequence_steps(id) on delete cascade,
+  attachment_id uuid not null references public.attachments(id)   on delete cascade,
+  primary key (step_id, attachment_id)
+);
+
+create table if not exists public.template_step_attachments (
+  template_step_id uuid not null references public.template_steps(id) on delete cascade,
+  attachment_id    uuid not null references public.attachments(id)    on delete cascade,
+  primary key (template_step_id, attachment_id)
+);
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  6. sends — one row per outbound email. The scheduler's work queue.
+-- ═══════════════════════════════════════════════════════════════════════════
+create table if not exists public.sends (
+  id                  uuid primary key default gen_random_uuid(),
+  user_id             uuid not null default auth.uid()
+                        references auth.users(id) on delete cascade,
+  lead_id             uuid not null references public.leads(id) on delete cascade,
+
+  -- Nulled rather than cascaded: a sent email stays in the log even if the
+  -- step it came from is later deleted.
+  step_id             uuid references public.sequence_steps(id) on delete set null,
+  gmail_account_id    uuid not null references public.gmail_accounts(id),
+
+  step_position       int     not null,        -- survives step deletion
+  is_follow_up        boolean not null default false,
+
+  status              public.send_status not null default 'pending',
+  scheduled_at        timestamptz not null,    -- UTC, from send_time_ist
+  claimed_at          timestamptz,
+  sent_at             timestamptz,
+
+  -- Exactly what went out. Audit trail + proves preview/send parity.
+  subject_rendered    text,
+  body_html_rendered  text,
+
+  gmail_message_id    text,   -- Gmail's internal id
+  gmail_thread_id     text,   -- threading target for the next follow-up
+  -- The RFC Message-ID Gmail ASSIGNED (read back via messages.get). Gmail
+  -- overwrites whatever Nodemailer generates, so this can only be populated
+  -- after the send. Follow-up In-Reply-To/References come from here.
+  rfc822_message_id   text,
+
+  -- Public, unguessable id used in the pixel and click URLs. Never expose
+  -- sends.id in an email.
+  tracking_id         uuid not null default gen_random_uuid(),
+
+  attempt_count       int  not null default 0,
+  last_error          text,
+  created_at          timestamptz not null default now()
+);
+
+-- The scheduler's hot path.
+create index if not exists sends_due_idx
+  on public.sends (status, scheduled_at) where status = 'pending';
+create index if not exists sends_lead_idx on public.sends (lead_id);
+create index if not exists sends_account_sent_idx
+  on public.sends (gmail_account_id, sent_at) where status = 'sent';
+create unique index if not exists sends_tracking_id_key
+  on public.sends (tracking_id);
+
+-- Idempotency: a lead can never have two send rows for the same step, so a
+-- retried launch or an overlapping tick cannot double-send. NOT deferrable —
+-- ON CONFLICT DO NOTHING relies on it.
+create unique index if not exists sends_lead_step_key
+  on public.sends (lead_id, step_position);
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  7. events — opens, clicks, replies
+-- ═══════════════════════════════════════════════════════════════════════════
+create table if not exists public.events (
+  id         bigint generated by default as identity primary key,
+  user_id    uuid not null default auth.uid()
+               references auth.users(id) on delete cascade,
+  send_id    uuid not null references public.sends(id) on delete cascade,
+  type       public.event_type not null,
+  url        text,                             -- clicks only
+  user_agent text,
+  ip         inet,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists events_send_idx on public.events (send_id, type);
+create index if not exists events_recent_idx on public.events (user_id, created_at desc);
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  8. settings — exactly one row (SequenceSettings)
+-- ═══════════════════════════════════════════════════════════════════════════
+create table if not exists public.settings (
+  user_id                uuid primary key default auth.uid()
+                           references auth.users(id) on delete cascade,
+
+  track_opens            boolean not null default false,
+  track_clicks           boolean not null default false,
+
+  -- 0 = Monday … 6 = Sunday, matching the Weekday type. NOT Luxon's 1-7.
+  outreach_days          int[] not null default '{0,1,2,3}',
+  follow_up_days         int[] not null default '{0,1,2,3,4}',
+
+  -- Random gap between consecutive sends, for deliverability.
+  jitter_min_seconds     int not null default 45  check (jitter_min_seconds >= 0),
+  jitter_max_seconds     int not null default 240 check (jitter_max_seconds >= 0),
+  -- Past this, a missed send is rescheduled instead of firing late at 2am.
+  stale_send_grace_hours int not null default 6   check (stale_send_grace_hours > 0),
+
+  constraint settings_jitter_order check (jitter_max_seconds >= jitter_min_seconds),
+  updated_at             timestamptz not null default now()
+);
+
+drop trigger if exists settings_touch on public.settings;
+create trigger settings_touch before update on public.settings
+  for each row execute function public.touch_updated_at();
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  9. oauth_states — CSRF protection for the Google connect flow
+--  Server-only. RLS on with no policies = nobody but the secret key.
+-- ═══════════════════════════════════════════════════════════════════════════
+create table if not exists public.oauth_states (
+  state      text primary key,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default now() + interval '10 minutes'
+);
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  ROW LEVEL SECURITY
+-- ═══════════════════════════════════════════════════════════════════════════
+alter table public.gmail_accounts           enable row level security;
+alter table public.leads                    enable row level security;
+alter table public.templates                enable row level security;
+alter table public.template_steps           enable row level security;
+alter table public.sequence_steps           enable row level security;
+alter table public.attachments              enable row level security;
+alter table public.step_attachments         enable row level security;
+alter table public.template_step_attachments enable row level security;
+alter table public.sends                    enable row level security;
+alter table public.events                   enable row level security;
+alter table public.settings                 enable row level security;
+alter table public.oauth_states             enable row level security;
+
+-- Own-rows policies for the tables the browser both reads and writes.
+do $$
+declare t text;
+begin
+  foreach t in array array['leads','templates','attachments']
+  loop
+    execute format('drop policy if exists own_rows on public.%I', t);
+    execute format($f$
+      create policy own_rows on public.%I
+        for all to authenticated
+        using (user_id = auth.uid())
+        with check (user_id = auth.uid())
+    $f$, t);
+  end loop;
+end $$;
+
+-- sends and events are READ-ONLY to the browser: the scheduler and the tracking
+-- endpoints own them. The UI shows status and engagement; it must not be able to
+-- forge a send row or fake an open.
+do $$
+declare t text;
+begin
+  foreach t in array array['sends','events']
+  loop
+    execute format('drop policy if exists own_rows on public.%I', t);
+    execute format('drop policy if exists read_own on public.%I', t);
+    execute format($f$
+      create policy read_own on public.%I
+        for select to authenticated
+        using (user_id = auth.uid())
+    $f$, t);
+  end loop;
+end $$;
+
+-- settings is keyed by user_id rather than having one.
+drop policy if exists own_rows on public.settings;
+create policy own_rows on public.settings
+  for all to authenticated
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid());
+
+-- Child tables inherit ownership through their parent.
+drop policy if exists own_rows on public.template_steps;
+create policy own_rows on public.template_steps
+  for all to authenticated
+  using (exists (select 1 from public.templates t
+                  where t.id = template_id and t.user_id = auth.uid()))
+  with check (exists (select 1 from public.templates t
+                  where t.id = template_id and t.user_id = auth.uid()));
+
+drop policy if exists own_rows on public.sequence_steps;
+create policy own_rows on public.sequence_steps
+  for all to authenticated
+  using (exists (select 1 from public.leads l
+                  where l.id = lead_id and l.user_id = auth.uid()))
+  with check (exists (select 1 from public.leads l
+                  where l.id = lead_id and l.user_id = auth.uid()));
+
+drop policy if exists own_rows on public.step_attachments;
+create policy own_rows on public.step_attachments
+  for all to authenticated
+  using (exists (select 1 from public.sequence_steps s join public.leads l on l.id = s.lead_id
+                  where s.id = step_id and l.user_id = auth.uid()))
+  with check (exists (select 1 from public.sequence_steps s join public.leads l on l.id = s.lead_id
+                  where s.id = step_id and l.user_id = auth.uid()));
+
+drop policy if exists own_rows on public.template_step_attachments;
+create policy own_rows on public.template_step_attachments
+  for all to authenticated
+  using (exists (select 1 from public.template_steps ts join public.templates t on t.id = ts.template_id
+                  where ts.id = template_step_id and t.user_id = auth.uid()))
+  with check (exists (select 1 from public.template_steps ts join public.templates t on t.id = ts.template_id
+                  where ts.id = template_step_id and t.user_id = auth.uid()));
+
+-- gmail_accounts and oauth_states get NO policies on purpose: only the secret
+-- key (which bypasses RLS) may touch them.
+
+-- Belt and braces on sends/events: RLS already denies writes (there is only a
+-- SELECT policy), but leaving the default INSERT/UPDATE/DELETE grants in place
+-- means that protection rests on a single mechanism. Revoke the privileges too,
+-- so a future accidental `for all` policy still can't open a hole.
+revoke insert, update, delete, truncate, references, trigger
+  on public.sends  from anon, authenticated;
+revoke insert, update, delete, truncate, references, trigger
+  on public.events from anon, authenticated;
+grant select on public.sends  to authenticated;
+grant select on public.events to authenticated;
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  gmail_accounts_public — the only way the browser sees a connected account
+--
+--  Table privileges are revoked below, so this view is the sole path and it
+--  cannot leak refresh_token_enc. It runs with the view owner's rights (not
+--  security_invoker) precisely because the base table denies the caller, so it
+--  filters on auth.uid() itself.
+-- ═══════════════════════════════════════════════════════════════════════════
+create or replace view public.gmail_accounts_public
+with (security_invoker = false) as
+  select id, email, display_name, daily_limit, status, created_at
+  from public.gmail_accounts
+  where user_id = auth.uid();
+
+revoke all on public.gmail_accounts from anon, authenticated;
+revoke all on public.oauth_states  from anon, authenticated;
+revoke all on public.gmail_accounts_public from anon;
+grant select on public.gmail_accounts_public to authenticated;
+
+-- The daily cap is the one gmail_accounts field the UI edits (SenderLimitDialog).
+create or replace function public.set_daily_limit(p_account_id uuid, p_limit int)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_limit < 1 or p_limit > 500 then
+    raise exception 'daily_limit must be between 1 and 500';
+  end if;
+
+  update public.gmail_accounts
+     set daily_limit = p_limit
+   where id = p_account_id
+     and user_id = auth.uid();   -- scoped to the caller, not just the id
+end;
+$$;
+
+revoke all on function public.set_daily_limit(uuid, int) from public, anon;
+grant execute on function public.set_daily_limit(uuid, int) to authenticated, service_role;
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  SCHEDULER RPCs — the parts supabase-js cannot express
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Atomically claim the due sends for one account.
+--
+-- FOR UPDATE SKIP LOCKED is what makes the loop safe across restarts and
+-- overlapping ticks: two concurrent callers can never claim the same row, so
+-- an email cannot be sent twice. Server-only (secret key).
+create or replace function public.claim_due_sends(p_account_id uuid, p_limit int)
+returns setof public.sends
+language sql
+security definer
+set search_path = public
+as $$
+  update public.sends s
+     set status        = 'sending',
+         claimed_at    = now(),
+         attempt_count = s.attempt_count + 1
+   where s.id in (
+     select c.id
+       from public.sends c
+      where c.gmail_account_id = p_account_id
+        and c.status = 'pending'
+        and c.scheduled_at <= now()
+      order by c.scheduled_at
+      limit greatest(p_limit, 0)
+      for update skip locked
+   )
+  returning s.*;
+$$;
+
+-- How many emails this account has already sent "today" in IST — the daily cap
+-- is a human-facing, IST-day notion, not a UTC-day one.
+create or replace function public.sent_today_count(p_account_id uuid)
+returns int
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select count(*)::int
+    from public.sends
+   where gmail_account_id = p_account_id
+     and status = 'sent'
+     and sent_at >= (date_trunc('day', now() at time zone 'Asia/Kolkata')
+                       at time zone 'Asia/Kolkata');
+$$;
+
+-- Revoking from PUBLIC strips the default EXECUTE for every role, including the
+-- secret key's, so service_role has to be granted back explicitly.
+revoke all on function public.claim_due_sends(uuid, int) from public, anon, authenticated;
+revoke all on function public.sent_today_count(uuid)     from public, anon, authenticated;
+grant execute on function public.claim_due_sends(uuid, int) to service_role;
+grant execute on function public.sent_today_count(uuid)     to service_role;
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  STORAGE — private bucket for the resume
+-- ═══════════════════════════════════════════════════════════════════════════
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'attachments', 'attachments', false, 4194304,
+  array['application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
+)
+on conflict (id) do update
+  set public             = false,
+      file_size_limit    = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+-- Objects live at attachments/<user_id>/<uuid>.<ext>, so the first path
+-- segment is the ownership check.
+drop policy if exists attachments_own_files on storage.objects;
+create policy attachments_own_files on storage.objects
+  for all to authenticated
+  using (bucket_id = 'attachments'
+         and (storage.foldername(name))[1] = auth.uid()::text)
+  with check (bucket_id = 'attachments'
+         and (storage.foldername(name))[1] = auth.uid()::text);
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  SEED — one settings row for the signed-in user
+--  Run this separately AFTER creating your user in Authentication → Users.
+-- ═══════════════════════════════════════════════════════════════════════════
+insert into public.settings (user_id)
+select id from auth.users
+on conflict (user_id) do nothing;
