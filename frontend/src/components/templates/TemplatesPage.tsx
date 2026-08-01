@@ -1,25 +1,23 @@
 import { useState } from "react"
-import { FileText, Mail } from "lucide-react"
+import { FileText, Loader2, Mail } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { SequenceSidebar } from "@/components/compose/SequenceSidebar"
 import { EmailEditor } from "@/components/compose/EmailEditor"
 import { SendTestPopover } from "@/components/compose/SendTestPopover"
 import { TemplateSidebar } from "./TemplateSidebar"
 import { RenameTemplateDialog } from "./RenameTemplateDialog"
-import { newTemplate } from "@/lib/mock-data"
 import {
   appendFollowUp,
   describeSequence,
   duplicateEmailStep,
-  patchStep,
   removeEmailStep,
   setDelayDays,
 } from "@/lib/sequence"
-import type { EmailTemplate, SequenceStep } from "@/lib/types"
+import type { TemplatesStore } from "@/lib/use-templates"
 
 interface TemplatesPageProps {
-  templates: EmailTemplate[]
-  onChange: (templates: EmailTemplate[]) => void
+  /** Templates plus their persistence — see `useTemplates`. */
+  store: TemplatesStore
   /** Connected Gmail address — the test send needs one to send from. */
   senderEmail?: string | undefined
 }
@@ -28,97 +26,96 @@ interface TemplatesPageProps {
  * Templates page — a template is a whole sequence blueprint (opening email, waits,
  * follow-ups). Uses the same sequence rail + editor canvas as the compose Content
  * step, so writing a template is identical to writing a recipient's emails.
+ *
+ * Step ids here are real `template_steps` UUIDs, which is what lets the test-send
+ * button work: the server resolves the step by id and renders the stored row.
  */
-export function TemplatesPage({
-  templates,
-  onChange,
-  senderEmail,
-}: TemplatesPageProps) {
-  const [activeTemplateId, setActiveTemplateId] = useState(
-    () => templates[0]?.id ?? ""
-  )
-  const [activeStepId, setActiveStepId] = useState(
-    () => templates[0]?.steps.find((s) => s.kind === "email")?.id ?? ""
-  )
+export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
+  const { templates, loading, error } = store
+
+  /**
+   * What the user has *chosen*, which is not the same as what's shown.
+   *
+   * Both are resolved against the current list below rather than kept in sync with
+   * it by an effect. That matters more than it looks: templates arrive
+   * asynchronously (so on first render there is nothing to select), and
+   * `store.setSteps` deletes and re-inserts every step row, so a selected step id
+   * routinely stops existing. Deriving the effective selection means both cases
+   * fall out for free, instead of each needing its own corrective effect that
+   * renders one wrong frame before fixing itself.
+   */
+  const [chosenTemplateId, setChosenTemplateId] = useState("")
+  const [chosenStepId, setChosenStepId] = useState("")
   /** Which template the rename dialog is open for (null = closed). */
   const [renamingId, setRenamingId] = useState<string | null>(null)
 
-  const template = templates.find((t) => t.id === activeTemplateId) ?? null
+  const template =
+    templates.find((t) => t.id === chosenTemplateId) ?? templates[0] ?? null
   const steps = template?.steps ?? []
-  const activeStep = steps.find((s) => s.id === activeStepId && s.kind === "email")
+
+  const activeStep =
+    steps.find((s) => s.id === chosenStepId && s.kind === "email") ??
+    steps.find((s) => s.kind === "email")
+
+  const activeTemplateId = template?.id ?? ""
+  const activeStepId = activeStep?.id ?? ""
+
   const isFollowUp = activeStep
     ? activeStep.name.toLowerCase().includes("follow")
     : false
 
-  /** Switch templates and land on that template's first email. */
+  /** Switch templates. The step falls back to that template's first email. */
   function selectTemplate(id: string) {
-    setActiveTemplateId(id)
-    const next = templates.find((t) => t.id === id)
-    setActiveStepId(next?.steps.find((s) => s.kind === "email")?.id ?? "")
+    setChosenTemplateId(id)
+    setChosenStepId("")
   }
 
-  function setSteps(next: SequenceStep[]) {
+  async function addTemplate() {
+    const created = await store.add()
+    if (!created) return
+    selectTemplate(created.id)
+  }
+
+  async function duplicateTemplate(id: string) {
+    const copy = await store.duplicate(id)
+    if (!copy) return
+    selectTemplate(copy.id)
+  }
+
+  async function deleteTemplate(id: string) {
+    await store.remove(id)
+    // No need to pick a replacement — an id that no longer exists resolves to the
+    // first remaining template on the next render.
+  }
+
+  async function addStep() {
     if (!template) return
-    onChange(
-      templates.map((t) => (t.id === template.id ? { ...t, steps: next } : t))
+    const { steps: next } = appendFollowUp(steps, template.id)
+    const saved = await store.setSteps(template.id, next)
+    // Select the new follow-up by position, not by the id `appendFollowUp`
+    // invented — the persisted rows carry database-assigned ids instead.
+    setChosenStepId(saved.filter((s) => s.kind === "email").at(-1)?.id ?? "")
+  }
+
+  async function deleteStep(id: string) {
+    if (!template) return
+    await store.setSteps(template.id, removeEmailStep(steps, id))
+  }
+
+  if (loading) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </div>
     )
   }
 
-  /** Rename any template by id — the header field and the rail menu share this. */
-  function rename(id: string, name: string) {
-    onChange(templates.map((t) => (t.id === id ? { ...t, name } : t)))
-  }
-
-  function addTemplate() {
-    const created = newTemplate(`tpl-${templates.length + 1}-${templates.length}`)
-    onChange([...templates, created])
-    setActiveTemplateId(created.id)
-    setActiveStepId(created.steps[0]?.id ?? "")
-  }
-
-  function duplicateTemplate(id: string) {
-    const idx = templates.findIndex((t) => t.id === id)
-    const source = templates[idx]
-    // `idx === -1` and "index is in range" are the same check to the compiler
-    // here, so one guard on `source` covers both.
-    if (!source) return
-    const newId = `tpl-copy-${templates.length}-${id}`
-    const copy: EmailTemplate = {
-      id: newId,
-      name: `${source.name} (copy)`,
-      // Re-key steps so the copy's steps don't collide with the original's.
-      steps: source.steps.map((s, i) => ({ ...s, id: `${newId}-${i}` })),
-    }
-    const next = [...templates]
-    next.splice(idx + 1, 0, copy)
-    onChange(next)
-    setActiveTemplateId(copy.id)
-    setActiveStepId(copy.steps.find((s) => s.kind === "email")?.id ?? "")
-  }
-
-  function deleteTemplate(id: string) {
-    const next = templates.filter((t) => t.id !== id)
-    onChange(next)
-    if (id === activeTemplateId) {
-      const fallback = next[0]
-      setActiveTemplateId(fallback?.id ?? "")
-      setActiveStepId(fallback?.steps.find((s) => s.kind === "email")?.id ?? "")
-    }
-  }
-
-  function addStep() {
-    if (!template) return
-    const { steps: next, newStepId } = appendFollowUp(steps, template.id)
-    setSteps(next)
-    setActiveStepId(newStepId)
-  }
-
-  function deleteStep(id: string) {
-    const next = removeEmailStep(steps, id)
-    if (id === activeStepId) {
-      setActiveStepId(next.find((s) => s.kind === "email")?.id ?? "")
-    }
-    setSteps(next)
+  if (error) {
+    return (
+      <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-destructive">
+        {error}
+      </div>
+    )
   }
 
   return (
@@ -127,16 +124,16 @@ export function TemplatesPage({
         templates={templates}
         activeId={activeTemplateId}
         onSelect={selectTemplate}
-        onAdd={addTemplate}
+        onAdd={() => void addTemplate()}
         onRename={setRenamingId}
-        onDuplicate={duplicateTemplate}
-        onDelete={deleteTemplate}
+        onDuplicate={(id) => void duplicateTemplate(id)}
+        onDelete={(id) => void deleteTemplate(id)}
       />
 
       <RenameTemplateDialog
         template={templates.find((t) => t.id === renamingId) ?? null}
         onOpenChange={(open) => !open && setRenamingId(null)}
-        onSave={(name) => renamingId && rename(renamingId, name)}
+        onSave={(name) => renamingId && store.rename(renamingId, name)}
       />
 
       {template ? (
@@ -146,7 +143,7 @@ export function TemplatesPage({
             <FileText className="size-4 shrink-0 text-muted-foreground" />
             <Input
               value={template.name}
-              onChange={(e) => rename(template.id, e.target.value)}
+              onChange={(e) => store.rename(template.id, e.target.value)}
               placeholder="Template name"
               aria-label="Template name"
               className="h-8 max-w-sm border-0 px-0 text-[15px] font-semibold text-foreground shadow-none focus-visible:ring-0"
@@ -161,11 +158,15 @@ export function TemplatesPage({
             <SequenceSidebar
               steps={steps}
               activeStepId={activeStepId}
-              onSelect={setActiveStepId}
-              onAddStep={addStep}
-              onDuplicateStep={(id) => setSteps(duplicateEmailStep(steps, id))}
-              onDeleteStep={deleteStep}
-              onChangeDelay={(id, days) => setSteps(setDelayDays(steps, id, days))}
+              onSelect={setChosenStepId}
+              onAddStep={() => void addStep()}
+              onDuplicateStep={(id) =>
+                void store.setSteps(template.id, duplicateEmailStep(steps, id))
+              }
+              onDeleteStep={(id) => void deleteStep(id)}
+              onChangeDelay={(id, days) =>
+                void store.setSteps(template.id, setDelayDays(steps, id, days))
+              }
             />
 
             {/* Dotted canvas — same as the compose Content step. */}
@@ -187,11 +188,9 @@ export function TemplatesPage({
                       <Input
                         value={activeStep.subject ?? ""}
                         onChange={(e) =>
-                          setSteps(
-                            patchStep(steps, activeStep.id, {
-                              subject: e.target.value,
-                            })
-                          )
+                          store.editStep(template.id, activeStep.id, {
+                            subject: e.target.value,
+                          })
                         }
                         placeholder={
                           isFollowUp
@@ -200,14 +199,24 @@ export function TemplatesPage({
                         }
                         className="h-8 flex-1 border-0 px-0 text-foreground shadow-none focus-visible:ring-0"
                       />
-                      <SendTestPopover senderEmail={senderEmail} />
+                      {/*
+                        No leadId — the Templates page has no recipient, so every
+                        merge tag falls back to its own default. `onBeforeSend`
+                        flushes the debounced editor saves, since the server renders
+                        the stored row rather than anything sent in the request.
+                      */}
+                      <SendTestPopover
+                        senderEmail={senderEmail}
+                        stepId={activeStep.id}
+                        onBeforeSend={store.flush}
+                      />
                     </div>
 
                     <EmailEditor
                       key={activeStep.id}
                       bodyHtml={activeStep.bodyHtml ?? ""}
                       onChange={(html) =>
-                        setSteps(patchStep(steps, activeStep.id, { bodyHtml: html }))
+                        store.editStep(template.id, activeStep.id, { bodyHtml: html })
                       }
                     />
                   </div>

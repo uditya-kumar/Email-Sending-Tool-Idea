@@ -1,4 +1,4 @@
-import { ArrowLeft, Pencil, Plus, Trash2 } from "lucide-react"
+import { AlertTriangle, ArrowLeft, Loader2, Pencil, Plus, Trash2 } from "lucide-react"
 import {
   Table,
   TableBody,
@@ -33,6 +33,13 @@ interface SettingsPageProps {
   /** Disconnects the account from sending. Doesn't touch the user's profile. */
   onRemoveSender: (sender: SenderAccount) => void
   onSaveSchedule: () => void
+  /**
+   * Starts Google OAuth consent. A navigation away from the app, not a dialog —
+   * the user comes back via a redirect.
+   */
+  onConnect: () => void
+  /** True while the consent URL (which needs a fresh token) is being built. */
+  connecting?: boolean | undefined
   /** Returns to whichever page Settings was opened from. */
   onBack: () => void
   /** Label for the Back button, e.g. "Database" or "Templates". */
@@ -144,6 +151,8 @@ export function SettingsPage({
   onEditSender,
   onRemoveSender,
   onSaveSchedule,
+  onConnect,
+  connecting,
   onBack,
   backLabel,
 }: SettingsPageProps) {
@@ -207,7 +216,26 @@ export function SettingsPage({
                   <TableRow key={s.id}>
                     <TableCell>
                       <p className="font-medium text-foreground">{s.email}</p>
-                      <p className="text-xs text-muted-foreground">{s.name}</p>
+                      {/*
+                        A revoked or expired refresh token is otherwise invisible
+                        until a send fails, which for a scheduled campaign means
+                        finding out hours later. Reconnecting is the same consent
+                        flow as adding — Google just replaces the token.
+                      */}
+                      {s.status === "active" ? (
+                        <p className="text-xs text-muted-foreground">{s.name}</p>
+                      ) : (
+                        <button
+                          onClick={onConnect}
+                          disabled={connecting}
+                          className="mt-0.5 flex items-center gap-1 text-xs font-medium text-destructive hover:underline disabled:opacity-60"
+                        >
+                          <AlertTriangle className="size-3" />
+                          {s.status === "revoked"
+                            ? "Access revoked — reconnect"
+                            : "Needs reauthorization — reconnect"}
+                        </button>
+                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {s.dailyLimit}/day
@@ -247,9 +275,27 @@ export function SettingsPage({
             </TableBody>
           </Table>
         </div>
-        <Button variant="outline" size="sm" className="mt-3 gap-1.5">
-          <Plus className="size-4" /> Add account
-        </Button>
+        {/*
+          Only one account is supported: the test-send and launch paths both
+          refuse with `ambiguous_account` rather than guessing which of several to
+          send from. So once one is connected there is nothing to add.
+        */}
+        {senders.length === 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-3 gap-1.5"
+            onClick={onConnect}
+            disabled={connecting}
+          >
+            {connecting ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Plus className="size-4" />
+            )}
+            {connecting ? "Opening Google…" : "Connect Gmail account"}
+          </Button>
+        )}
       </section>
 
       {/* Tracking */}

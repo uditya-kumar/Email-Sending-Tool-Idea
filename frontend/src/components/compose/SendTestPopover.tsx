@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Send } from "lucide-react"
+import { Loader2, Send } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,6 +9,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { ApiError, sendTest } from "@/lib/api"
 
 interface SendTestPopoverProps {
   /**
@@ -17,6 +18,25 @@ interface SendTestPopoverProps {
    * almost always goes to yourself.
    */
   senderEmail?: string | undefined
+  /**
+   * The `template_steps` / `sequence_steps` row to send — a real database UUID,
+   * not a client-side id. Undefined while the step has never been saved, which
+   * blocks the send: the server renders the row it reads by this id, so there is
+   * nothing to send yet.
+   */
+  stepId?: string | undefined
+  /**
+   * Whose data to merge into the tags. Omitted on the Templates page, where there
+   * is no recipient — every tag then falls back to its own default, which is
+   * exactly what the Preview shows.
+   */
+  leadId?: string | undefined
+  /**
+   * Flush pending editor edits before sending. The server re-reads the step from
+   * the database and ignores anything in the request body, so without this a test
+   * would show the last *saved* text rather than what's on screen.
+   */
+  onBeforeSend?: (() => Promise<void>) | undefined
 }
 
 /** Loose sanity check; Gmail is the real validator. */
@@ -31,23 +51,57 @@ function looksLikeEmail(value: string): boolean {
  * Needs a connected account to send from, so with none it says so and points at
  * Settings rather than offering a button that can't work.
  */
-export function SendTestPopover({ senderEmail }: SendTestPopoverProps) {
+export function SendTestPopover({
+  senderEmail,
+  stepId,
+  leadId,
+  onBeforeSend,
+}: SendTestPopoverProps) {
   const [open, setOpen] = useState(false)
   const [email, setEmail] = useState(senderEmail ?? "")
+  const [busy, setBusy] = useState(false)
 
   const connected = !!senderEmail
   const valid = looksLikeEmail(email)
 
-  function handleSend() {
-    if (!connected || !valid) return
-    setOpen(false)
-    toast.success(`Test email sent to ${email.trim()}`, {
-      description: `Sent from ${senderEmail}.`,
-    })
+  async function handleSend() {
+    if (!connected || !valid || busy) return
+
+    if (!stepId) {
+      toast.error("Nothing to send yet", {
+        description: "This email hasn't been saved. Make an edit and try again.",
+      })
+      return
+    }
+
+    setBusy(true)
+
+    try {
+      // Save first — the test email is rendered from the stored row, not from
+      // what's in the editor.
+      await onBeforeSend?.()
+
+      const result = await sendTest({
+        stepId,
+        to: email.trim(),
+        ...(leadId ? { leadId } : {}),
+      })
+
+      setOpen(false)
+      toast.success(`Test email sent to ${result.to}`, {
+        // The server prefixes the real subject with "[TEST] " — say so, so the
+        // subject in the inbox doesn't look like a bug.
+        description: `Sent from ${result.from} as “[TEST] ${result.subject}”.`,
+      })
+    } catch (error) {
+      toast.error("Couldn't send the test", { description: describe(error) })
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => !busy && setOpen(next)}>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -70,11 +124,17 @@ export function SendTestPopover({ senderEmail }: SendTestPopoverProps) {
                 placeholder="you@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                onKeyDown={(e) => e.key === "Enter" && void handleSend()}
+                disabled={busy}
               />
             </div>
-            <Button className="w-full" onClick={handleSend} disabled={!valid}>
-              Send test email
+            <Button
+              className="w-full"
+              onClick={() => void handleSend()}
+              disabled={!valid || busy}
+            >
+              {busy && <Loader2 className="size-4 animate-spin" />}
+              {busy ? "Sending…" : "Send test email"}
             </Button>
           </>
         ) : (
@@ -88,4 +148,17 @@ export function SendTestPopover({ senderEmail }: SendTestPopoverProps) {
       </PopoverContent>
     </Popover>
   )
+}
+
+/**
+ * The server's message, verbatim where there is one.
+ *
+ * Every 409 from the send path is written to be shown to the user as-is ("This
+ * email has no subject.", "Connect a Gmail account in Settings before sending.")
+ * — rewording them here would only make them vaguer.
+ */
+function describe(error: unknown): string {
+  if (error instanceof ApiError) return error.message
+  if (error instanceof Error) return error.message
+  return "Something went wrong."
 }
