@@ -281,17 +281,25 @@ async function processSend(context: ProcessSendContext): Promise<SendOutcome> {
 
   // ── 7. Render and send ────────────────────────────────────────────────────
   try {
+    /*
+     * Threading is resolved **before** rendering, not after, because it supplies
+     * the subject a blank follow-up inherits. The other way round, `render` threw
+     * `EmptyStepError` on the very follow-up the compose UI tells you to leave
+     * blank ("leave it blank to send as a reply") — permanently failed, since an
+     * empty step is deliberately not retryable. Found by sending a real one.
+     */
+    const threading = await threadingFor(send, lead)
+
     const rendered = emailRenderer.render(step, lead, {
       trackOpens: settings.trackOpens,
       trackClicks: settings.trackClicks,
       trackingId: send.tracking_id,
+      ...(threading.parentSubject ? { inheritedSubject: threading.parentSubject } : {}),
     })
-
-    const threading = await threadingFor(send, lead, rendered.subject)
 
     const result = await mailer.send({
       to: lead.email,
-      subject: threading.subject,
+      subject: rendered.subject,
       html: rendered.html,
       text: rendered.text,
       ...(await attachmentsFor(step.id)),
@@ -345,23 +353,26 @@ async function handleSendError(error: unknown, context: ProcessSendContext): Pro
 }
 
 /**
- * The subject and headers that keep a follow-up inside its thread.
+ * The headers that keep a follow-up inside its thread, and the subject it inherits.
  *
  * All three of a matching `Subject`, `In-Reply-To`/`References` and `threadId` are
  * required; two out of three detaches the message in some clients. The parent's
- * **stored** subject is reused verbatim rather than re-rendered, because a lead
- * edited since the opening email would otherwise produce a subtly different
+ * **stored** subject is handed back verbatim rather than re-rendered, because a
+ * lead edited since the opening email would otherwise produce a subtly different
  * subject and Gmail would start a new thread.
+ *
+ * `parentSubject` is only a *candidate*: the renderer prefers the step's own
+ * subject when it has one. Returning it rather than deciding here keeps the
+ * "which subject wins" rule in one place.
  */
 async function threadingFor(
   send: SendRow,
-  lead: Lead,
-  renderedSubject: string
+  lead: Lead
 ): Promise<{
-  subject: string
+  parentSubject: string | null
   headers: Pick<SendEmailInput, "threadId" | "inReplyTo" | "references">
 }> {
-  if (!send.is_follow_up) return { subject: renderedSubject, headers: {} }
+  if (!send.is_follow_up) return { parentSubject: null, headers: {} }
 
   const parent = await sendQueue.lastSentFor(lead.id)
 
@@ -370,11 +381,11 @@ async function threadingFor(
       { sendId: send.id, leadId: lead.id },
       "Follow-up has no parent thread; sending as a new message"
     )
-    return { subject: renderedSubject, headers: {} }
+    return { parentSubject: null, headers: {} }
   }
 
   return {
-    subject: parent.subject_rendered ?? renderedSubject,
+    parentSubject: parent.subject_rendered,
     headers: {
       threadId: parent.gmail_thread_id,
       ...(parent.rfc822_message_id

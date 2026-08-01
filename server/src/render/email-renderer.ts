@@ -22,6 +22,18 @@ export interface RenderOptions {
    * pollute the recipient's event history.
    */
   trackingId?: string | undefined
+  /**
+   * The subject to use when the step deliberately leaves it blank.
+   *
+   * A follow-up that goes out as a reply in an existing thread has no subject of
+   * its own — the compose UI says so ("leave it blank to send as a reply") — and
+   * inherits the parent email's. Passed in rather than looked up here so this
+   * file keeps its one job and stays database-free.
+   *
+   * Used **verbatim**, never through `renderTags`: it is already-rendered text,
+   * and a second pass would re-interpret a `{{` that survived into the subject.
+   */
+  inheritedSubject?: string | undefined
 }
 
 export interface RenderedEmail {
@@ -51,17 +63,24 @@ export class EmailRenderer {
 
     const rawSubject = step.subject?.trim() ?? ""
     const rawBody = step.bodyHtml?.trim() ?? ""
+    const inherited = options.inheritedSubject?.trim() ?? ""
 
     // Checked before rendering: after merge-tag substitution a body of nothing
     // but `{{first_name}}` would look non-empty while saying nothing.
-    if (!rawSubject) throw new EmptyStepError("This email has no subject.")
+    if (!rawSubject && !inherited) throw new EmptyStepError("This email has no subject.")
     if (!rawBody || !hasVisibleText(rawBody)) {
       throw new EmptyStepError("This email has an empty body.")
     }
 
-    // `html: false` for the subject: it is plain text, and escaping an ampersand
-    // there would put a literal "&amp;" in the recipient's inbox.
-    const subject = renderTags(rawSubject, lead)
+    /*
+     * `html: false` for the subject: it is plain text, and escaping an ampersand
+     * there would put a literal "&amp;" in the recipient's inbox.
+     *
+     * The step's own subject wins when it has one — a follow-up is allowed to
+     * change the subject, it just then starts its own thread, which is the
+     * documented consequence of typing one in.
+     */
+    const subject = rawSubject ? renderTags(rawSubject, lead) : inherited
     let html = renderTags(rawBody, lead, { html: true })
 
     const trackingId = options.trackingId

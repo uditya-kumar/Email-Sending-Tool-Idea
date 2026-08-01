@@ -51,15 +51,26 @@ top of it.** Two things it forced, both now done:
 - **Senders are real** (`lib/accounts.ts`, via the `gmail_accounts_public` view). `MOCK_SENDERS` and
   `MOCK_TEMPLATES` are gone; `mock-data.ts` is down to `MOCK_LEADS` and `DEFAULT_SETTINGS`.
 
+**A real campaign has now run end to end.** A lead addressed to a genuinely different inbox
+(`uditya204@gmail.com`, not the connected sender) was launched, its opening email went out **at its
+own IST minute**, and the follow-up landed **inside the same Gmail thread** — verified against
+Gmail's own stored headers, not just the rows we wrote. See Phase 8 and Phase 9 below for what that
+proved and the one real bug it caught.
+
+⚠️ **Testing-only setting in force:** `outreach_days` and `follow_up_days` are both
+`{0,1,2,3,4,5,6}` (Mon–Sun) so a timing test can run on any day. **Before production, put both back
+to Mon–Thu** (`{0,1,2,3}` for outreach; follow-ups were `{0,1,2,3,4}`). Weekend cold opens are
+exactly what that setting exists to prevent. This is a `settings` row change, not code — do it in
+the Settings page.
+
 What's left:
 
-1. **Phase 4: the remaining CRUD** — `settings` → `leads` (+ CSV import) → per-lead
-   `sequence_steps`, then delete `mock-data.ts`. This is the bulk of the remaining work.
-2. **Launch / cancel and the attach control** — the two server calls still unwired
-   (`BACKEND_PLAN.md` §10). Connect and `SendTestPopover` are done.
-3. **Still unproven, and only provable by a real campaign**: that a follow-up lands in the *same
-   thread*, and that a reply cancels the pending ones. Needs Phase 4's `sequence_steps` plus a
-   launch, since both are scheduler behaviour rather than test-send behaviour.
+1. **Phase 7 (attachments UI)** — the attach control on the email step, still entirely unbuilt on
+   the frontend. `attachment-store.ts` is ready server-side.
+2. **Phase 10's last check** — a reply cancelling the pending follow-ups. Needs a human to actually
+   hit Reply; everything else around it is verified.
+3. **Phase 4 CRUD and launch/cancel are done**, including `sequence_steps` and `mock-data.ts`'s
+   removal down to `MOCK_LEADS` + `DEFAULT_SETTINGS`.
 
 **Known gap, low priority:** nothing prunes abandoned `oauth_states` rows. A row is burned on a
 successful callback and an expired one is refused, so this is unbounded growth rather than a
@@ -545,7 +556,21 @@ every optional field needs conditional-spread form. Know this before Phase 5.
       closed**: unset → 403, never an open trigger. Comparison is constant-time.
       **Verified:** wrong secret → 403, correct secret reaches `runTick`, `Authorization: Bearer` and
       `X-Cron-Secret` both accepted, no secret → 403.
-- [ ] **Verify:** set a lead's IST time ~2 min out, watch it send and flip to `sent`; kill and restart the server mid-run and confirm no double-send
+- [x] **Verified end to end, real delivery on a real schedule.** Lead → `uditya204@gmail.com` (a
+      genuinely different inbox from the connected sender, which is what makes reply detection mean
+      anything), `send_time_ist = 22:30`, launched at 22:27 IST. `firstSendAt` wrote
+      `scheduled_at = 2026-08-01 17:00:00+00` — 22:30 IST **the same day**, where before the day-set
+      change this identical launch went to Monday. Claimed at `17:00:02.266`, sent at `17:00:03.614`:
+      **~3.6 s after its own minute**, tick + jitter included. `attempt_count: 1`, `last_error: null`,
+      lead `draft → scheduled`, `sends: claimed 1, sent 1`.
+      - **No double-send, proven by accident and better than the planned test.** A server from an
+        earlier session had survived its `TaskStop` (which killed the npm wrapper, not the `tsx`
+        child), so **two independent schedulers were polling the same queue** on the same minute. One
+        logged `claimed: 1, sent: 1`; the other, ticking at the same second, logged `claimed: 0`. One
+        email, one `sends` row. That is `claim_due_sends`' `FOR UPDATE SKIP LOCKED` doing its job
+        under genuine process concurrency rather than a simulated restart.
+        ⚠️ Operational note: `TaskStop` on `npm run dev` leaves the `tsx` child alive. Kill the
+        `tsx`/node PID, or a stale scheduler keeps sending against your database.
 
 ## Phase 9 — Follow-ups
 *Server done.*
@@ -557,7 +582,30 @@ every optional field needs conditional-spread form. Know this before Phase 5.
       from the stored `rfc822_message_id`, and `threadId`. The parent's **stored** subject is reused
       verbatim rather than re-rendered — a lead edited since the opening email would otherwise produce
       a slightly different subject and Gmail would start a new thread.
-- [ ] **Verify:** shrink a wait to 1 day (or minutes temporarily) — follow-up #1 appears **inside the same Gmail thread**
+- [x] **Verified against Gmail's own headers, not just our rows.** Follow-up #1 (subject left blank,
+      i.e. the reply-in-thread path the compose UI advertises) went out on the same
+      `gmail_thread_id: 19fbe44bd644e533` as the opening email, with a *different*
+      `gmail_message_id`. `src/scripts/inspect-thread.ts` read the thread back via `threads.get` and
+      showed all three requirements actually on the wire:
+      `In-Reply-To` **and** `References` = the parent's real `Message-Id`
+      (`<CAHjWFDcR4YDcpsFE1SvJZXE+…@mail.gmail.com>`), and `Subject: Quick idea for Northwind Labs`
+      identical on both messages. Worth having as a script: inferring threading from the columns we
+      wrote ourselves would have proved nothing about what Gmail did with them.
+      - **A real bug, and only a live send could have found it: a blank follow-up subject was a
+        permanent failure.** `processSend` rendered *before* resolving threading, so
+        `EmailRenderer.render` hit `if (!rawSubject) throw new EmptyStepError` on exactly the step the
+        UI tells you to leave blank — and because an empty step is (correctly) not retryable, the
+        follow-up went straight to `status: 'failed'`,
+        `last_error: "EmptyStepError: This email has no subject."`. It never reached `threadingFor`,
+        which was sitting right there ready to supply the parent's subject.
+        Fixed by inverting the order: `threadingFor` now returns a `parentSubject` **candidate** and
+        runs first; `render` takes an `inheritedSubject` option and falls back to it. The step's own
+        subject still wins when it has one — typing a subject into a follow-up means starting a new
+        thread, which is the documented consequence. `inheritedSubject` is used **verbatim, never
+        through `renderTags`**: it is already-rendered text, and a second pass would re-interpret a
+        `{{` that survived into the subject.
+        Note the launch-time guard would never have caught this — `assertSendable` only validates the
+        **opening** email's subject, which is right, since a blank follow-up subject is legal.
 
 ## Phase 10 — Reply detection
 *Server done.*
