@@ -51,11 +51,15 @@ top of it.** Two things it forced, both now done:
 - **Senders are real** (`lib/accounts.ts`, via the `gmail_accounts_public` view). `MOCK_SENDERS` and
   `MOCK_TEMPLATES` are gone; `mock-data.ts` is down to `MOCK_LEADS` and `DEFAULT_SETTINGS`.
 
-**A real campaign has now run end to end.** A lead addressed to a genuinely different inbox
-(`uditya204@gmail.com`, not the connected sender) was launched, its opening email went out **at its
-own IST minute**, and the follow-up landed **inside the same Gmail thread** — verified against
-Gmail's own stored headers, not just the rows we wrote. See Phase 8 and Phase 9 below for what that
-proved and the one real bug it caught.
+**A real campaign has now run end to end — the whole product in one pass.** A lead addressed to a
+genuinely different inbox (`uditya204@gmail.com`, not the connected sender) was launched; its opening
+email went out **at its own IST minute**; the follow-up landed **inside the same Gmail thread**,
+verified against Gmail's own stored headers rather than the rows we wrote; and a **real human reply
+cancelled the remaining follow-up while it was still 28 minutes in the future**. Phases 8, 9 and 10
+are now verified by delivery, not by reading the code. See each phase below for the evidence and for
+the one real bug this caught (a blank follow-up subject was a permanent failure).
+
+That closes the last thing `BACKEND_PLAN.md` called unprovable without a real campaign.
 
 ⚠️ **Testing-only setting in force:** `outreach_days` and `follow_up_days` are both
 `{0,1,2,3,4,5,6}` (Mon–Sun) so a timing test can run on any day. **Before production, put both back
@@ -66,11 +70,10 @@ the Settings page.
 What's left:
 
 1. **Phase 7 (attachments UI)** — the attach control on the email step, still entirely unbuilt on
-   the frontend. `attachment-store.ts` is ready server-side.
-2. **Phase 10's last check** — a reply cancelling the pending follow-ups. Needs a human to actually
-   hit Reply; everything else around it is verified.
-3. **Phase 4 CRUD and launch/cancel are done**, including `sequence_steps` and `mock-data.ts`'s
-   removal down to `MOCK_LEADS` + `DEFAULT_SETTINGS`.
+   the frontend. `attachment-store.ts` is ready server-side. This is the only unbuilt feature left.
+2. **Phase 11's tunnel test** — open/click tracking needs a public URL to be exercised for real; the
+   endpoints and their refusal paths are already verified locally.
+3. **Revert the sending days** before going live (see the warning above).
 
 **Known gap, low priority:** nothing prunes abandoned `oauth_states` rows. A row is burned on a
 successful callback and an expired one is refused, so this is unbounded growth rather than a
@@ -617,7 +620,20 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 - [x] Sets `leads.replied_at` + `status='replied'`, inserts an `events` row, cancels that lead's
       pending `sends`. `processSend` re-checks `repliedAt` after the claim too, for a reply that
       arrived in the window between claiming and sending.
-- [ ] **Verify:** reply from another account → pending follow-ups become `cancelled`
+- [x] **Verified with a real human reply.** `uditya204@gmail.com` replied to the live thread at
+      `17:13:11+00`; the **next** tick (`17:14:02`) caught it and did all four things in one pass:
+      `Cancelled pending sends count: 1` → `Reply detected; follow-ups cancelled from:
+      "uditya204@gmail.com"` → `repliesDetected: 1`. Database after: `leads.replied_at = 17:13:11+00`
+      (**the reply's own timestamp, not the detection time**), `status: sending → replied`, one
+      `events` row `type: 'reply'` attributed to the send at position 2, and
+      `sends: sent@0, sent@2, cancelled@4`.
+      Two things this actually proves, which a self-send could not have:
+      - The `from` in the log is the **other** address. `reply-watcher` identifies a reply as
+        `From` ≠ the connected account, so replying from the sender itself would have been
+        indistinguishable from our own outbound mail — the check would have been vacuous.
+      - `cancelled@4` was scheduled for `17:41:50`, ~28 minutes in the *future*. It was killed while
+        genuinely pending, not merely after its moment had passed, which is the only version of this
+        behaviour that matters in production.
 
 ## Phase 11 — Tracking
 *Server done; the tunnel test is still open.*
