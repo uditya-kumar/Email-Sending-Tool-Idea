@@ -2,7 +2,6 @@ import type {
   EmailTemplate,
   Lead,
   SenderAccount,
-  SequenceSettings,
   SequenceStep,
   UserProfile,
 } from "./types"
@@ -209,9 +208,3 @@ export const MOCK_SENDERS: SenderAccount[] = [
   },
 ]
 
-export const DEFAULT_SETTINGS: SequenceSettings = {
-  trackOpens: false,
-  trackClicks: false,
-  outreachDays: [0, 1, 2, 3], // Mon–Thu
-  followUpDays: [0, 1, 2, 3, 4], // Mon–Fri
-}

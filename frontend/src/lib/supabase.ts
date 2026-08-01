@@ -73,3 +73,22 @@ export async function accessToken(): Promise<string> {
 
   return token
 }
+
+/**
+ * The signed-in user's id.
+ *
+ * Needed despite RLS already scoping every query to `auth.uid()`: PostgREST
+ * refuses an UPDATE or DELETE with no filter at all (`21000: UPDATE requires a
+ * WHERE clause`), as a guard against a forgotten `.eq()` rewriting the whole
+ * table. For rows keyed by anything else that filter is the row's own id; the
+ * `settings` table's primary key *is* `user_id`, so it needs this.
+ */
+export async function currentUserId(): Promise<string> {
+  const { data, error } = await supabase.auth.getSession()
+  if (error) throw error
+
+  const id = data.session?.user.id
+  if (!id) throw new Error("Not signed in.")
+
+  return id
+}

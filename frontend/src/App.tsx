@@ -15,18 +15,14 @@ import { setDailyLimit, useSenders } from "@/lib/accounts"
 import { ApiError, disconnectAccount, googleConsentUrl } from "@/lib/api"
 import { consumeOAuthReturn } from "@/lib/oauth-return"
 import { fullName } from "@/lib/leads"
-import {
-  DEFAULT_SETTINGS,
-  MOCK_LEADS,
-  newSequenceForLead,
-} from "@/lib/mock-data"
+import { MOCK_LEADS, newSequenceForLead } from "@/lib/mock-data"
+import { useSettings } from "@/lib/settings"
 import { formatIST } from "@/lib/time"
 import { useTemplates } from "@/lib/use-templates"
 import type {
   AppView,
   Lead,
   SenderAccount,
-  SequenceSettings,
   SequencesByLead,
   UserProfile,
 } from "@/lib/types"
@@ -99,11 +95,18 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
    * held in state because the Profile dialog can edit the display name.
    */
   const [profile, setProfile] = useState<UserProfile>(initialProfile)
-  const [settings, setSettings] = useState<SequenceSettings>(DEFAULT_SETTINGS)
   const [editingSenderId, setEditingSenderId] = useState<string | null>(null)
   const [profileOpen, setProfileOpen] = useState(false)
   /** True from the Connect click until the browser leaves for Google. */
   const [connecting, setConnecting] = useState(false)
+  /** True from the Save click on Settings until the write resolves. */
+  const [savingSettings, setSavingSettings] = useState(false)
+
+  /**
+   * The one `settings` row. Edited locally, written on the Save button rather than
+   * debounced — these values gate every future send.
+   */
+  const settingsStore = useSettings()
 
   /** The connected Gmail, read from `gmail_accounts_public` under RLS. */
   const { senders, refresh: refreshSenders } = useSenders()
@@ -144,6 +147,32 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
      */
     void refreshSenders()
   }, [refreshSenders])
+
+  /*
+   * A failed settings *read* is worth saying out loud: the page falls back to the
+   * column defaults, which look like real values, so silence here would show a
+   * plausible-but-wrong weekday set. Keyed on the message so it toasts once.
+   */
+  const settingsError = settingsStore.error
+  useEffect(() => {
+    if (settingsError) {
+      toast.error("Couldn't load your settings", { description: settingsError })
+    }
+  }, [settingsError])
+
+  /** Persist the tracking + weekday settings. */
+  async function saveSettings() {
+    setSavingSettings(true)
+    const message = await settingsStore.save()
+    setSavingSettings(false)
+
+    if (message) {
+      toast.error("Couldn't save settings", { description: message })
+      return
+    }
+
+    toast.success("Settings saved")
+  }
 
   /** Hand the browser to Google's consent screen. */
   async function connectGmail() {
@@ -307,13 +336,14 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
           <div className="flex-1 overflow-y-auto">
             <SettingsPage
               senders={senders}
-              settings={settings}
-              onSettingsChange={(patch) =>
-                setSettings((prev) => ({ ...prev, ...patch }))
-              }
+              settings={settingsStore.settings}
+              onSettingsChange={settingsStore.patch}
               onEditSender={(s) => setEditingSenderId(s.id)}
               onRemoveSender={(s) => void removeSender(s)}
-              onSaveSchedule={() => toast.success("Settings saved")}
+              onSaveSchedule={() => void saveSettings()}
+              settingsLoading={settingsStore.loading}
+              settingsDirty={settingsStore.dirty}
+              savingSettings={savingSettings}
               onConnect={() => void connectGmail()}
               connecting={connecting}
               onBack={() => setView(settingsOrigin)}

@@ -32,7 +32,14 @@ interface SettingsPageProps {
   onEditSender: (sender: SenderAccount) => void
   /** Disconnects the account from sending. Doesn't touch the user's profile. */
   onRemoveSender: (sender: SenderAccount) => void
+  /** Persists the tracking + weekday settings. */
   onSaveSchedule: () => void
+  /** True while the settings row is being read, so the controls aren't editable yet. */
+  settingsLoading?: boolean | undefined
+  /** True when there are unsaved local changes. */
+  settingsDirty?: boolean | undefined
+  /** True from the Save click until the write resolves. */
+  savingSettings?: boolean | undefined
   /**
    * Starts Google OAuth consent. A navigation away from the app, not a dialog —
    * the user comes back via a redirect.
@@ -82,14 +89,17 @@ function DayPicker({
   hint,
   selected,
   onToggle,
+  disabled,
 }: {
   label: string
   hint: string
   selected: Weekday[]
   onToggle: (day: Weekday) => void
+  /** Set while the row is still being read — see the call site. */
+  disabled?: boolean | undefined
 }) {
   return (
-    <div className="space-y-2">
+    <div className={cn("space-y-2", disabled && "pointer-events-none opacity-60")}>
       <div>
         <p className="text-sm font-medium text-foreground">{label}</p>
         <p className="text-sm text-muted-foreground">{hint}</p>
@@ -108,6 +118,7 @@ function DayPicker({
             >
               <Checkbox
                 checked={active}
+                disabled={disabled}
                 onCheckedChange={() => onToggle(day.value)}
               />
               {day.label}
@@ -151,6 +162,9 @@ export function SettingsPage({
   onEditSender,
   onRemoveSender,
   onSaveSchedule,
+  settingsLoading,
+  settingsDirty,
+  savingSettings,
   onConnect,
   connecting,
   onBack,
@@ -330,23 +344,41 @@ export function SettingsPage({
           description="Days sends are allowed. A recipient whose IST send time falls on an excluded day waits for the next allowed one."
         />
 
+        {/*
+          Locked until the row has been read. The displayed values start as the
+          column defaults, so a click landing before the fetch resolves would be
+          silently overwritten by it — the user would watch their own change undo
+          itself.
+        */}
         <div className="space-y-5">
           <DayPicker
             label="Days for new lead outreach"
             hint="When a first-touch email to a brand-new lead may go out."
             selected={settings.outreachDays}
             onToggle={(d) => toggleDay("outreachDays", d)}
+            disabled={settingsLoading}
           />
           <DayPicker
             label="Days for follow-up emails to go out"
             hint="When a follow-up in an existing thread may go out, if there's been no reply."
             selected={settings.followUpDays}
             onToggle={(d) => toggleDay("followUpDays", d)}
+            disabled={settingsLoading}
           />
         </div>
 
-        <Button className="mt-5" onClick={onSaveSchedule}>
-          Save settings
+        {/*
+          Disabled when there's nothing to save, so the button doubles as the
+          indicator of whether the local copy matches the database — these values
+          change every future send, and "did that take?" is worth answering.
+        */}
+        <Button
+          className="mt-5 gap-1.5"
+          onClick={onSaveSchedule}
+          disabled={savingSettings || settingsLoading || settingsDirty === false}
+        >
+          {savingSettings && <Loader2 className="size-4 animate-spin" />}
+          {savingSettings ? "Saving…" : settingsDirty ? "Save settings" : "Saved"}
         </Button>
       </section>
     </div>
