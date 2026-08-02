@@ -7,6 +7,7 @@ import {
   Minus,
   MoreVertical,
   Plus,
+  Reply,
   Trash2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -17,7 +18,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import type { SequenceStep } from "@/lib/types"
+import { StepTimingBadge } from "./StepTimingBadge"
+import type { SequenceStep, StepTiming } from "@/lib/types"
 
 interface SequenceSidebarProps {
   steps: SequenceStep[]
@@ -27,6 +29,24 @@ interface SequenceSidebarProps {
   onDuplicateStep: (id: string) => void
   onDeleteStep: (id: string) => void
   onChangeDelay: (id: string, waitDays: number) => void
+  /**
+   * When each email is due, keyed by step id — see `projectSequenceSchedule`.
+   *
+   * Optional because the Templates page reuses this rail, and a template has no
+   * recipient and no queue: there is genuinely no answer to "when does this send",
+   * so the badges are absent there rather than faked.
+   */
+  timings?: Map<string, StepTiming> | undefined
+  /**
+   * The step after which the recipient replied — see `SequenceSchedule`.
+   *
+   * The marker goes on the connector *below* that card rather than on the card
+   * itself, because that is where it happened: the email above it is what the
+   * recipient answered, and everything below it is what the answer called off.
+   * Optional for the same reason as `timings` — a template has no recipient to
+   * reply.
+   */
+  replyAfterStepId?: string | null | undefined
   /**
    * True while a structural save is in flight.
    *
@@ -48,6 +68,8 @@ export function SequenceSidebar({
   onDuplicateStep,
   onDeleteStep,
   onChangeDelay,
+  timings,
+  replyAfterStepId,
   busy,
 }: SequenceSidebarProps) {
   return (
@@ -55,6 +77,7 @@ export function SequenceSidebar({
       <div className="flex-1 space-y-2 overflow-y-auto p-3">
         {steps.map((step, i) => {
           const isLast = i === steps.length - 1
+          const repliedHere = step.id === replyAfterStepId
           return (
             <div key={step.id}>
               {step.kind === "email" ? (
@@ -64,6 +87,7 @@ export function SequenceSidebar({
                   onClick={() => onSelect(step.id)}
                   onDuplicate={() => onDuplicateStep(step.id)}
                   onDelete={() => onDeleteStep(step.id)}
+                  timing={timings?.get(step.id)}
                   busy={busy}
                 />
               ) : (
@@ -73,7 +97,14 @@ export function SequenceSidebar({
                   busy={busy}
                 />
               )}
-              {!isLast && <StepConnector />}
+              {/*
+                The reply replaces the plain connector rather than sitting beside
+                it: it *is* what happened at this point in the line. Still rendered
+                when this is the last step — the sequence ending here is exactly
+                what a reply on the final email means, and dropping the marker
+                would lose the one event the user most wants to see.
+              */}
+              {repliedHere ? <ReplyMarker /> : !isLast && <StepConnector />}
             </div>
           )
         })}
@@ -95,12 +126,38 @@ function StepConnector() {
   return <div className="mx-auto my-1 h-4 w-px bg-border" />
 }
 
+/**
+ * "Replied" on the vertical line, where the reply landed.
+ *
+ * The success colour, because this is the win — every other state in this rail is
+ * either neutral or a warning, and a reply is the outcome the whole sequence is
+ * for. It is also the reason the cards below it say "Won't send": the two are
+ * cause and effect, so they are deliberately legible together rather than the
+ * cancellations reading as an unexplained failure.
+ *
+ * The hairline stays on the rail's centre line with the label set beside it, so
+ * the thread reads as continuing *through* the reply rather than being cut in two
+ * — the reply interrupts the sequence, it doesn't end the diagram.
+ */
+function ReplyMarker() {
+  return (
+    <div className="my-1 flex items-center gap-1.5">
+      <div className="ml-[calc(50%-0.5px)] h-4 w-px shrink-0 bg-success/40" />
+      <span className="flex items-center gap-1 text-xs font-medium text-success">
+        <Reply className="size-3" />
+        Replied
+      </span>
+    </div>
+  )
+}
+
 function EmailCard({
   step,
   active,
   onClick,
   onDuplicate,
   onDelete,
+  timing,
   busy,
 }: {
   step: SequenceStep
@@ -108,9 +165,17 @@ function EmailCard({
   onClick: () => void
   onDuplicate: () => void
   onDelete: () => void
+  timing?: StepTiming | undefined
   busy?: boolean | undefined
 }) {
   const missing = !step.subject && !step.bodyHtml
+  /*
+   * "Missing content" is suppressed once the email has gone out: whatever was in
+   * it then is what the recipient received, and the fields being blank *now* would
+   * only mean the step was edited afterwards. Warning about it would suggest
+   * something is still fixable.
+   */
+  const showMissing = missing && timing?.kind !== "sent"
   return (
     <div
       role="button"
@@ -136,11 +201,12 @@ function EmailCard({
         <span className="block truncate text-sm font-medium text-foreground">
           {step.name}
         </span>
-        {missing && (
+        {showMissing && (
           <span className="block text-xs text-muted-foreground italic">
             Missing content
           </span>
         )}
+        <StepTimingBadge timing={timing} />
       </span>
 
       <DropdownMenu>

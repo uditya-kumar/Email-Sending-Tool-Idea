@@ -9,7 +9,13 @@ import { SendTestPopover } from "./SendTestPopover"
 import { ApplyTemplateMenu } from "./ApplyTemplateMenu"
 import { AttachmentBar } from "./AttachmentBar"
 import { formatIST } from "@/lib/time"
-import type { EmailTemplate, Lead, SequenceStep, StepAttachment } from "@/lib/types"
+import type {
+  EmailTemplate,
+  Lead,
+  SequenceStep,
+  StepAttachment,
+  StepTiming,
+} from "@/lib/types"
 
 interface ContentStepProps {
   /** The one recipient this sequence belongs to. */
@@ -26,6 +32,10 @@ interface ContentStepProps {
   onDeleteStep: (id: string) => void
   onChangeDelay: (id: string, waitDays: number) => void
   onChangeSendTime: (hhmm: string) => void
+  /** When each email is due, keyed by step id — rendered in the sequence rail. */
+  timings?: Map<string, StepTiming> | undefined
+  /** The step after which the recipient replied — the rail marks the break there. */
+  replyAfterStepId?: string | null | undefined
   /** Upload a file and attach it to the step being edited. */
   onAttach: (stepId: string, file: File) => Promise<void>
   onDetach: (stepId: string, attachment: StepAttachment) => Promise<void>
@@ -56,6 +66,8 @@ export function ContentStep({
   onDeleteStep,
   onChangeDelay,
   onChangeSendTime,
+  timings,
+  replyAfterStepId,
   onAttach,
   onDetach,
   onFlush,
@@ -76,6 +88,8 @@ export function ContentStep({
         onDuplicateStep={onDuplicateStep}
         onDeleteStep={onDeleteStep}
         onChangeDelay={onChangeDelay}
+        timings={timings}
+        replyAfterStepId={replyAfterStepId}
         busy={busy}
       />
 

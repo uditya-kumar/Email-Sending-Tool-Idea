@@ -209,3 +209,106 @@ export type EventType = Enums<"event_type">
 
 /** Lifecycle of one row in the scheduler's queue. */
 export type SendStatus = Enums<"send_status">
+
+/**
+ * One queued or delivered email, as the compose sidebar needs it.
+ *
+ * A deliberately narrow projection of `sends`: the browser has SELECT on that
+ * table, but the sidebar only needs to answer "has this step gone out, and when",
+ * so the rendered bodies, Gmail ids and error text stay out. Keyed to a step by
+ * `stepPosition` rather than `stepId`, because `sends.step_id` is
+ * `on delete set null` — a step deleted and re-added loses the link while the
+ * position survives.
+ */
+export interface SequenceSend {
+  id: string
+  /** Index of the step in the sequence — `sequence_steps.position`. */
+  stepPosition: number
+  status: SendStatus
+  /** When the scheduler intends to send, or did. Always present. */
+  scheduledAt: string
+  /** When it actually went out; only set once `status` is `sent`. */
+  sentAt?: string | undefined
+}
+
+/**
+ * Why an email in a sequence will never go out.
+ *
+ * Machine-readable alongside `stopped`'s prose `reason`, because the label the
+ * user reads is not the sentence: "Won't send" alone leaves them looking for the
+ * cause, and matching on the prose to find it would make a reworded sentence a
+ * silent UI change.
+ *
+ * `replied` is the one worth telling apart — it is the outcome the tool exists to
+ * produce, whereas the other two are housekeeping.
+ */
+export type StoppedCause = "replied" | "cancelled" | "skipped"
+
+/**
+ * When one email in a sequence is due, and how much to trust that.
+ *
+ * The `kind` is the hedge. Only `sent` is history; `scheduled` is a real queued
+ * row, and `projected` is arithmetic that can still move — follow-ups are queued
+ * one at a time, so a step two places out has no row yet and its time depends on
+ * when the email before it actually goes out. Collapsing the two would present a
+ * guess with the same confidence as a fact.
+ *
+ * See `projectSequenceSchedule`, which is the only thing that builds these.
+ */
+export type StepTiming =
+  /** Delivered. `at` is `sent_at` — what happened, not what was planned. */
+  | { kind: "sent"; at: string }
+  /** Claimed by the scheduler and in flight right now. */
+  | { kind: "sending" }
+  /** A real `pending` row: `at` is the `scheduled_at` the tick will fire on. */
+  | { kind: "scheduled"; at: string }
+  /** No row yet — `at` is computed from the step before it and may move. */
+  | { kind: "projected"; at: string }
+  /** The sequence ended here: a reply, or a cancelled step. */
+  | { kind: "stopped"; cause: StoppedCause; reason: string }
+  /** Can't be scheduled at all — an earlier step failed, or the settings forbid it. */
+  | { kind: "blocked"; reason: string }
+
+/**
+ * How much one recipient has engaged, counted across every email in their
+ * sequence — the `lead_engagement` view.
+ *
+ * Counts rather than booleans, because a single open proves almost nothing:
+ * Apple Mail Privacy Protection and Gmail's image proxy fetch the pixel before
+ * anyone has looked at the message. A *second* open minutes later is a person
+ * coming back to it, and that distinction is the whole reason this exists.
+ *
+ * Per lead rather than per email: a sequence is several messages in one thread,
+ * and the question the Database table answers is "did this person engage".
+ */
+export interface LeadEngagement {
+  /**
+   * How many times the tracking pixel was fetched, at most once per 10 seconds.
+   *
+   * That window is enforced in `recordOpen`, and it is the *only* dedupe in the
+   * stack — anything further apart is counted, including a re-open a few seconds
+   * later. Deliberately re-opening a message is the clearest evidence of a human
+   * there is, so collapsing it would discard the signal this number exists for.
+   */
+  opens: number
+  /**
+   * How many opens arrived through a provider's image proxy.
+   *
+   * **Not a noise count to subtract.** Gmail serves every image through
+   * GoogleImageProxy, including the fetch caused by a human opening the message,
+   * so for a Gmail recipient this equals `opens` and every one of them is real.
+   * It exists only to hedge the single-open case, where a lone open shortly after
+   * delivery may be a prefetch rather than a read.
+   */
+  proxyOpens: number
+  clicks: number
+  /**
+   * How many *different* links were clicked. Three clicks on one link is a
+   * weaker signal than one click on three, so the two aren't interchangeable.
+   */
+  distinctLinks: number
+  /** Replies detected on the thread — the strongest signal there is. */
+  replies: number
+  lastOpenAt?: string | undefined
+  lastClickAt?: string | undefined
+}

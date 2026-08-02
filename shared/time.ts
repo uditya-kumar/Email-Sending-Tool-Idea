@@ -29,6 +29,85 @@ export function istTimeToUtcIso(hhmm: string, refDate = "2026-01-01"): string {
   return dt.toUTC().toISO() ?? ""
 }
 
+/**
+ * Format a UTC timestamp from the database for display in IST, e.g.
+ * "2 Aug, 3:30 PM IST".
+ *
+ * The zone is forced rather than left to the browser: every other time in this
+ * app is IST (each lead's send time is defined that way), and an open that reads
+ * as 10:05 next to a send time of 09:30 is only comparable if both are the same
+ * clock. `{ zone: "utc" }` covers a Postgres timestamp that arrived without an
+ * offset — parsed as local it would be silently hours out.
+ */
+export function formatISTDateTime(iso: string): string {
+  const dt = DateTime.fromISO(iso, { zone: "utc" }).setZone(IST_ZONE)
+  if (!dt.isValid) return iso
+  return `${dt.toFormat("d LLL, h:mm a")} IST`
+}
+
+/**
+ * A UTC timestamp as a short IST calendar day + time, e.g. "Tue 4 Aug, 9:30 AM".
+ *
+ * The weekday is included on purpose: the scheduler skips days the settings
+ * exclude, so "Tue" is what explains why a three-day wait landed four days out.
+ * No "IST" suffix — this is for lines that already say it, unlike
+ * `formatISTDateTime`.
+ */
+export function formatISTDayTime(iso: string): string {
+  const dt = DateTime.fromISO(iso, { zone: "utc" }).setZone(IST_ZONE)
+  if (!dt.isValid) return iso
+  return dt.toFormat("ccc d LLL, h:mm a")
+}
+
+/**
+ * A UTC timestamp as an IST time of day alone, e.g. "9:35 AM".
+ *
+ * Joined with a non-breaking space: this goes into narrow labels that are allowed
+ * to wrap, and "9:35" on one line with "AM" on the next is unreadable in a way
+ * that breaking anywhere else in the sentence is not.
+ */
+export function formatISTClock(iso: string): string {
+  const dt = DateTime.fromISO(iso, { zone: "utc" }).setZone(IST_ZONE)
+  if (!dt.isValid) return iso
+  return `${dt.toFormat("h:mm")}\u00a0${dt.toFormat("a")}`
+}
+
+/**
+ * A UTC timestamp as an IST calendar date: "5 Aug", or "21 Jul 2025" in another
+ * year.
+ *
+ * The year appears only when it isn't the current one. Dropping it always would
+ * be wrong in a tool that keeps history — "21 Jul" beside a sequence that ran
+ * last summer is genuinely ambiguous — but printing it always makes every
+ * ordinary near-future date four characters longer than it needs to be, in a
+ * 16rem rail where that is the difference between one line and two.
+ */
+export function formatISTDay(iso: string, now: DateTime = DateTime.utc()): string {
+  const dt = DateTime.fromISO(iso, { zone: "utc" }).setZone(IST_ZONE)
+  if (!dt.isValid) return iso
+
+  return dt.year === now.setZone(IST_ZONE).year
+    ? dt.toFormat("d LLL")
+    : dt.toFormat("d LLL yyyy")
+}
+
+/**
+ * How many IST calendar days away a timestamp is: 0 today, 1 tomorrow, -3 three
+ * days ago. `null` if it isn't a valid timestamp.
+ *
+ * Counted in **calendar days in IST**, not in elapsed hours, because that is how
+ * the sequence is specified — "wait 3 days" means three dates later at the
+ * recipient's own send time, and 09:30 tomorrow is "tomorrow" whether it is now
+ * 23:00 or 08:00. Elapsed-hour rounding would call the same instant "in 10 hours"
+ * or "in 2 days" depending on when you looked.
+ */
+export function istDayDelta(iso: string, now: DateTime = DateTime.utc()): number | null {
+  const target = DateTime.fromISO(iso, { zone: "utc" }).setZone(IST_ZONE)
+  if (!target.isValid) return null
+
+  return target.startOf("day").diff(now.setZone(IST_ZONE).startOf("day"), "days").days
+}
+
 /** Format an IST "HH:mm" for display, e.g. "3:30 PM IST". */
 export function formatIST(hhmm: string): string {
   const dt = DateTime.fromFormat(hhmm, IST_TIME_FORMAT, { zone: IST_ZONE })

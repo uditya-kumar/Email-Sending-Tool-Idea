@@ -36,10 +36,24 @@ console.log(`Generating types for project ${projectRef} → shared/database.type
  * Requires a logged-in CLI — `npx supabase login` — whose token is a developer
  * credential and deliberately not one of the server's env vars.
  */
+const isWindows = process.platform === "win32"
+
 const result = spawnSync(
-  process.platform === "win32" ? "npx.cmd" : "npx",
+  isWindows ? "npx.cmd" : "npx",
   ["--yes", "supabase@latest", "gen", "types", "typescript", "--project-id", projectRef],
-  { cwd: repoRoot, encoding: "utf8", maxBuffer: 20 * 1024 * 1024 }
+  {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 20 * 1024 * 1024,
+    /*
+     * `shell: true` on Windows only. Node ≥18.20 refuses to spawn a `.cmd` or
+     * `.bat` directly — it fails with EINVAL rather than running it — because
+     * doing so was the CVE-2024-27980 argument-injection hole. A shell is the
+     * supported way to launch one, and the arguments here are a project ref
+     * matched against `[a-z0-9]+` plus literals, so there is nothing to inject.
+     */
+    ...(isWindows ? { shell: true } : {}),
+  }
 )
 
 if (result.error) {
@@ -49,7 +63,11 @@ if (result.error) {
 if (result.status !== 0) {
   fail(
     `supabase gen types exited with ${result.status}.\n` +
-      `${result.stderr?.trim() ?? ""}\n\n` +
+      // Both streams: the CLI reports its own errors as a JSON object on
+      // **stdout** and leaves stderr empty, so printing only stderr turns a
+      // specific message ("your account does not have the necessary
+      // privileges") into a blank line and a guess about logging in.
+      `${[result.stdout, result.stderr].map((s) => s?.trim()).filter(Boolean).join("\n")}\n\n` +
       "If this is an auth error, run: npx supabase login"
   )
 }

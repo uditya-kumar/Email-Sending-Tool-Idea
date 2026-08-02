@@ -23,14 +23,34 @@ export interface RecordEventInput {
 }
 
 /**
- * Gmail prefetches every image in a message through this proxy before the
- * recipient has seen anything, so a pixel hit from it says nothing about a human.
- * Filtering it is the difference between an open rate and a noise rate.
+ * Mail providers that fetch images through a rewriting proxy instead of letting
+ * the reader's client connect to us.
+ *
+ * These are **labelled, not dropped.** Gmail serves every image in every message
+ * through this proxy — including the fetch caused by a human opening the message —
+ * so discarding the user agent means a Gmail recipient shows zero opens forever.
+ * Verified 2026-08-02: an email delivered at 04:23:05 got no pixel request at all
+ * until the message was opened, then exactly one per open (04:32:54, 04:33:44).
+ * The proxy user agent said nothing about whether a person was involved; the
+ * *timing* did.
+ *
+ * What the marker is good for is the caveat. A provider that prefetches at
+ * delivery (Apple Mail Privacy Protection is the usual one) produces a single open
+ * seconds after the send and none afterwards, which is why the UI leans on "two
+ * or more opens" rather than on this list.
+ *
+ * Kept in sync with the same list in `lead_engagement` (`supabase/schema.sql`),
+ * which recomputes this from `events.user_agent` for the `proxy_opens` count.
  */
 const PROXY_AGENT_MARKERS = ["googleimageproxy", "yahoomailproxy", "ggpht.com"]
 
-/** Is this pixel request a mail provider's prefetch rather than a reader? */
-export function isProxyPrefetch(userAgent: string | undefined): boolean {
+/**
+ * Was this pixel fetched through a mail provider's image proxy?
+ *
+ * Only ever used to annotate an open — see the note above on why it must not be
+ * used to reject one.
+ */
+export function isProxyFetch(userAgent: string | undefined): boolean {
   if (!userAgent) return false
   const agent = userAgent.toLowerCase()
   return PROXY_AGENT_MARKERS.some((marker) => agent.includes(marker))
@@ -81,7 +101,11 @@ export async function hasRecentEvent(
 }
 
 /**
- * Record an open unless it is a proxy prefetch or a duplicate.
+ * Record an open unless it duplicates one from seconds ago.
+ *
+ * A proxied fetch is **recorded**, not skipped — see `PROXY_AGENT_MARKERS`. The
+ * user agent is stored as-is so the proxy question can be asked later, at display
+ * time, without having thrown the open away.
  *
  * Never throws: a tracking pixel must return its GIF whatever happens, because
  * the alternative is a broken-image icon in a cold email — a worse outcome than a
@@ -89,11 +113,6 @@ export async function hasRecentEvent(
  */
 export async function recordOpen(input: RecordEventInput): Promise<boolean> {
   try {
-    if (isProxyPrefetch(input.userAgent)) {
-      log.debug({ sendId: input.sendId }, "Ignoring proxy prefetch of open pixel")
-      return false
-    }
-
     if (await hasRecentEvent(input.sendId, "open", 10)) return false
 
     await recordEvent({ ...input, type: "open" })

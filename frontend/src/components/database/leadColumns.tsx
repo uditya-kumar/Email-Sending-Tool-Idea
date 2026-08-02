@@ -1,9 +1,10 @@
 import type { ColumnDef, RowData } from "@tanstack/react-table"
 import { CalendarX, Pencil, Send, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { EngagementCell } from "@/components/common/EngagementCell"
 import { LeadStatusBadge } from "@/components/common/StatusBadge"
 import { SendTimePicker } from "@/components/common/SendTimePicker"
-import type { Lead } from "@/lib/types"
+import type { Lead, LeadEngagement } from "@/lib/types"
 
 // Extend TanStack column meta with our layout hints.
 declare module "@tanstack/react-table" {
@@ -30,6 +31,18 @@ declare module "@tanstack/react-table" {
     onSend: (lead: Lead) => void
     /** Un-schedules a launched recipient, returning them to draft. */
     onCancelSchedule: (lead: Lead) => void
+    /**
+     * Open/click counts keyed by lead id — see `useEngagement`.
+     *
+     * Travels as meta rather than being joined onto each `Lead` because it comes
+     * from a different query on a different refresh cycle (the server writes these
+     * rows, so they're polled). Merging them into the row data would rebuild every
+     * lead object each poll and lose the table's row identity.
+     *
+     * A missing key means "no sends yet", which the cell renders differently from
+     * zero.
+     */
+    engagement: Record<string, LeadEngagement>
   }
 }
 
@@ -130,6 +143,22 @@ export const LEAD_COLUMNS: ColumnDef<Lead>[] = [
     header: "Status",
     cell: ({ row }) => <LeadStatusBadge status={row.original.status} />,
     meta: { minWidth: "120px" },
+  },
+  {
+    id: "engagement",
+    header: "Opens / clicks",
+    /*
+     * Not sortable, unlike every other column. A `sortingFn` receives only the two
+     * rows, never the table, and these counts live in table meta rather than on the
+     * row — so there is nothing for a comparator to read. Threading them onto each
+     * `Lead` instead would rebuild the row objects on every poll, which is the thing
+     * the meta arrangement exists to avoid.
+     */
+    enableSorting: false,
+    cell: ({ row, table }) => (
+      <EngagementCell engagement={table.options.meta?.engagement[row.original.id]} />
+    ),
+    meta: { minWidth: "130px" },
   },
   {
     id: "actions",

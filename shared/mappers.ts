@@ -2,7 +2,9 @@ import type { Tables } from "./database.types.ts"
 import type {
   AllSettings,
   Lead,
+  LeadEngagement,
   SenderAccount,
+  SequenceSend,
   SequenceStep,
   StepAttachment,
   Weekday,
@@ -28,6 +30,20 @@ type TemplateStepRow = Tables<"template_steps">
 type SettingsRow = Tables<"settings">
 type GmailAccountPublicRow = Tables<"gmail_accounts_public">
 type AttachmentRow = Tables<"attachments">
+type LeadEngagementRow = Tables<"lead_engagement">
+/**
+ * Only the timing columns of a `sends` row.
+ *
+ * `Pick`, not the whole `Tables<"sends">`, because the caller selects exactly these
+ * five columns — PostgREST types a projected `.select()` as a narrow object, so
+ * asking for the full row here would reject the very query this mapper exists for.
+ * Still derived from the generated type, so a rename in `schema.sql` still fails to
+ * compile.
+ */
+type SendTimingRow = Pick<
+  Tables<"sends">,
+  "id" | "step_position" | "status" | "scheduled_at" | "sent_at"
+>
 
 /**
  * `null` → `undefined`.
@@ -203,4 +219,54 @@ export function senderFromRow(row: GmailAccountPublicRow): SenderAccount | null 
 
 export function sendersFromRows(rows: GmailAccountPublicRow[]): SenderAccount[] {
   return rows.map(senderFromRow).filter((s): s is SenderAccount => s !== null)
+}
+
+/**
+ * A `sends` row → the timing fields the compose sidebar needs.
+ *
+ * Narrow by design: see `SequenceSend` for why the rendered bodies and Gmail ids
+ * are left behind rather than carried along "in case".
+ */
+export function sequenceSendFromRow(row: SendTimingRow): SequenceSend {
+  return {
+    id: row.id,
+    stepPosition: row.step_position,
+    status: row.status,
+    scheduledAt: row.scheduled_at,
+    sentAt: optional(row.sent_at),
+  }
+}
+
+/**
+ * The `lead_engagement` **view** → counts, keyed by lead id.
+ *
+ * Returns a map rather than a list because every consumer wants one lead's
+ * numbers, and the view has at most one row per lead.
+ *
+ * `?? 0` on every count, not `!`: each column of a view is nullable as far as
+ * Postgres is concerned, so the generated types are all-optional even though
+ * `count(*)` cannot actually be null. Zero is the honest reading either way —
+ * "no events" — whereas asserting would be a lie about what the type says.
+ * A row whose `lead_id` is null is skipped: there is no lead to key it under.
+ */
+export function engagementByLead(
+  rows: LeadEngagementRow[]
+): Record<string, LeadEngagement> {
+  const byLead: Record<string, LeadEngagement> = {}
+
+  for (const row of rows) {
+    if (!row.lead_id) continue
+
+    byLead[row.lead_id] = {
+      opens: row.open_count ?? 0,
+      proxyOpens: row.proxy_opens ?? 0,
+      clicks: row.click_count ?? 0,
+      distinctLinks: row.distinct_links ?? 0,
+      replies: row.reply_count ?? 0,
+      lastOpenAt: optional(row.last_open_at),
+      lastClickAt: optional(row.last_click_at),
+    }
+  }
+
+  return byLead
 }

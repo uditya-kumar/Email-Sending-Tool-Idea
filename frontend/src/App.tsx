@@ -20,6 +20,7 @@ import {
   launchLead as launchLeadRequest,
 } from "@/lib/api"
 import { consumeOAuthReturn } from "@/lib/oauth-return"
+import { useEngagement } from "@/lib/engagement"
 import { fullName } from "@/lib/leads"
 import { newSequenceForLead } from "@/lib/sequence"
 import { useLeads } from "@/lib/use-leads"
@@ -119,6 +120,15 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
     toast.error("Couldn't save that change", { description: message })
   )
   const leads = leadsStore.leads
+
+  /**
+   * Per-recipient open/click counts, read from the `lead_engagement` view.
+   *
+   * Its own store rather than part of `useLeads`, because the rows are written by
+   * the *server* — the tracking endpoints — so they need polling on a cycle of
+   * their own, while `leads` only changes when this tab changes it.
+   */
+  const engagementStore = useEngagement()
 
   /** Per-recipient sequences, read from `sequence_steps` under RLS. */
   const sequencesStore = useSequences((message) =>
@@ -404,6 +414,7 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
         {view === "database" && (
           <DatabasePage
             store={leadsStore}
+            engagementStore={engagementStore}
             onSend={openCompose}
             onCancelSchedule={(lead) => void cancelSchedule(lead)}
             onLeadDeleted={sequencesStore.forget}
@@ -426,6 +437,12 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
             }
             templates={templates}
             onChangeSendTime={(hhmm) => leadsStore.setSendTime(composingLead.id, hhmm)}
+            /*
+             * Paired with `onChangeSendTime`: the flow re-times any queued follow-up
+             * after a send-time edit, and that can only be right once the debounced
+             * write has actually landed.
+             */
+            onFlushSendTime={leadsStore.flush}
             onAttach={(stepId, file) =>
               sequencesStore.attach(composingLead.id, stepId, file)
             }
@@ -433,6 +450,13 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
               sequencesStore.detach(composingLead.id, stepId, attachment)
             }
             onLaunch={() => launchLead(composingLead)}
+            /*
+             * The same row the Settings page edits, so the rail's projected send
+             * times use the weekday windows the scheduler will actually apply. Until
+             * that read resolves these are `DEFAULT_SETTINGS`, which is also what the
+             * server falls back to for an un-seeded row.
+             */
+            settings={settingsStore.settings}
             onBack={backToDatabase}
             onFlush={sequencesStore.flush}
             senderEmail={senders[0]?.email}

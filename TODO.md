@@ -67,14 +67,26 @@ to Mon–Thu** (`{0,1,2,3}` for outreach; follow-ups were `{0,1,2,3,4}`). Weeken
 exactly what that setting exists to prevent. This is a `settings` row change, not code — do it in
 the Settings page.
 
+**Phase 11 is now done too.** Opens and clicks are counted per recipient — shown in the Database
+table's **Opens / clicks** column — and both endpoints were exercised through a public `cloudflared`
+tunnel: opens are counted and deduped, repeats increment, and every tampered, unsigned or replayed
+click link is refused. Counts rather than "Opened" badges because one open is nearly meaningless
+while a second is a person.
+
+Two things Phase 11 is worth reading for. **ngrok's free tier cannot serve the tracking pixel at all**
+and produces a convincing false positive if you test it by hand. And the first *real* inbox open
+caught a bug no synthetic test could: dropping `GoogleImageProxy` user agents would have shown **zero
+opens for every Gmail recipient forever**, because Gmail proxies images when a human opens the
+message too. Proxied opens are now recorded and merely labelled.
+
 What's left:
 
-1. **Phase 11's tunnel test** — open/click tracking needs a public URL to be exercised for real; the
-   endpoints and their refusal paths are already verified locally.
+1. **One real click from the inbox** — clicks are fully verified over the tunnel, but only with
+   `curl`. Given what the first real *open* turned up, that gap is worth closing.
 2. **Revert the sending days** before going live (see the warning above).
 
 **All six features are now built and verified end to end.** Phase 7 (attachments) was the last
-unbuilt one; everything remaining above is a verification that needs a public URL, or deploy prep.
+unbuilt one; everything remaining above is a manual confirmation or deploy prep.
 
 The **Templates** page now has an attach control too, and applying a template carries its files onto
 the recipient's steps — see Phase 7b.
@@ -695,8 +707,170 @@ role), and applying that template to a recipient brings the file along.
         genuinely pending, not merely after its moment had passed, which is the only version of this
         behaviour that matters in production.
 
+### Phase 9b — Send times in the compose rail ✅
+
+- [x] Every email step in the sequence sidebar now carries a line saying when it went out or when it
+      is due: "Sent today, 9:35 AM", "Sends 7 Aug", "Sends ≈ 11 Aug", "Won't send".
+      `StepTimingBadge` renders it; `projectSequenceSchedule` in `shared/schedule.ts` works it out.
+      (The relative "in 3 days" form these were first written with is gone — see Phase 9d.)
+- [x] **The whole design turns on one fact: follow-ups are queued lazily.** `enqueueNextStep` inserts
+      the `sends` row for step N+1 only once N has actually gone out, so at most *one* unsent step has
+      a real `scheduled_at` and everything past it has no row at all. The `StepTiming` union therefore
+      separates certainty rather than just state:
+      - `sent` / `sending` / `scheduled` — read straight from the row, **never recomputed**, so the
+        rail cannot contradict the scheduler.
+      - `projected` — chained arithmetic for steps with no row yet. Muted, prefixed `≈`, and its
+        tooltip names all three things that can move it (the previous email sending late, a changed
+        wait, changed weekdays in Settings).
+      - `stopped` / `blocked` — a replied lead, or a step sitting behind a failed/cancelled send.
+        `enqueueNextStep` only runs after a *successful* send, so a confident time there would be a
+        lie; the chain breaks instead of guessing.
+- [x] **The arithmetic moved to `shared/schedule.ts` rather than being reimplemented.** The scheduler
+      decides when an email really goes out and the sidebar claims when it will; those two answers have
+      to agree, so they are literally the same functions. `server/src/scheduler/schedule.ts` is now a
+      re-export plus the send loop's own pacing (`jitterMs`, `sleep`), which has no business in a
+      projection.
+- [x] "It updates when you change the wait" needed no machinery **for projected steps**:
+      `projectSequenceSchedule` is a pure function of the current `steps` array, so it runs during
+      render and every following projection re-derives on the same render as the number changing.
+      **Verified in the browser** — 3 → 5 days moved Follow-up #3 from "Sends ≈ in 6 days" to
+      "Sends ≈ 10 Aug 2026", and the tooltip to "Estimated Mon 10 Aug, 9:35 AM IST".
+      A step that already has a **queued row** was a different matter, and needed a server round trip
+      — see Phase 9c.
+- [x] `useSends` reads the queue **directly under RLS** — no server route. `sends` is SELECT-only to
+      the browser (its INSERT/UPDATE grants are revoked), which is precisely what makes a row here
+      trustworthy: the scheduler is the only writer. Only the five timing columns are selected; the
+      table also holds the rendered bodies, and shipping an entire email per row to render one line of
+      text would be absurd.
+      - The rows are stored **tagged with the lead they were read for** and read back only on a match.
+        Rows pair to steps by `position`, so the previous recipient's queue against this one's steps
+        would show someone else's send time under this lead's follow-up. Clearing that in an effect was
+        the first attempt: it is both a cascading render (`react-hooks/set-state-in-effect`) and one
+        frame too late. Deriving makes the wrong pairing unrepresentable.
+- [x] Two smaller judgements worth keeping:
+      - The badge **wraps rather than truncates**. The rail narrows further the moment it gains a
+        scrollbar — exactly when a fixed-width label starts losing its last characters — and "Sent
+        today, 9:3…" is worse than a slightly taller card when the time *is* the point.
+        `formatISTClock` joins "AM" to the digits with a non-breaking space so the wrap can only land
+        somewhere sensible.
+      - "Missing content" is suppressed once a step has sent. Whatever was in it then is what the
+        recipient received; warning about blank fields now would imply something is still fixable.
+- [x] `timings` is optional on `SequenceSidebar` because the Templates page reuses the rail, and a
+      template has no recipient and no queue — there is genuinely no answer to "when does this send",
+      so the badges are absent there rather than faked.
+
+### Phase 9c — A wait change now moves the send that's already queued ✅
+
+Reported as "I updated the wait from 3 to 5 but the card still says 3 days". The badge was right; the
+**queue** was stale. Two separate fixes.
+
+- [x] **The bug: a queued send is a snapshot, and nothing revisited it.** `enqueueNextStep` computes
+      `scheduled_at` from the wait that was in force the moment the previous email went out. Editing
+      that wait afterwards wrote `sequence_steps` and left the `sends` row where it was — so the rail
+      went on reporting the old date, *correctly*, because that row is what the scheduler would have
+      fired. Confirmed in SQL before writing anything: step position 3 held `wait_days = 5` while the
+      pending row at position 4 still sat in the old 3-day slot.
+- [x] `POST /api/leads/:id/resync-schedule` recomputes each pending row from
+      `followUpSendAt(<parent's real sent_at>, <current wait>, sendTimeIST, followUpDays)` — the same
+      rule and the same function the tick uses — and moves it only if the answer differs. A **route**
+      and not a frontend write because `sends` is SELECT-only to the browser; the scheduler being its
+      only writer is exactly what makes a row there trustworthy, and that property was worth keeping.
+- [x] `sendQueue.rescheduleIfPending` filters on `status = 'pending'` rather than updating by id.
+      `claim_due_sends` flips `pending` → `sending` atomically, so a plain update could land on a row
+      being sent *right now* and reset it to pending — the same email twice. If the claim wins the
+      race this matches zero rows and does nothing. Only `scheduled_at` is written; rewriting `status`
+      here would be the very thing the filter exists to prevent.
+- [x] Rows that are `sending`, `sent`, `cancelled`, `failed` or `skipped` are never touched. Also
+      skipped: the **opening** email (its time comes from `firstSendAt` at launch and no wait bears on
+      it, so recomputing would just shove the user's own launch time around), and any row whose
+      position no longer matches what the sequence says comes next — the "step was deleted or
+      renumbered" case, which the tick already fails loudly and which guessing a time would paper over.
+- [x] Called after **every** structural edit, not just a changed wait: adding or deleting a step
+      renumbers positions, which decides which step a queued row is even for. Awaited *after* the save,
+      since the server re-reads `sequence_steps` to decide the new time.
+- [x] Changing the **send time** goes through the same path, and needed `leadsStore.flush()` first:
+      `setSendTime` is optimistic and debounced by 600 ms, so a resync fired alongside it would have
+      read the *old* time, computed the time the row already had, and moved nothing — the same bug one
+      level down. `onFlushSendTime` was added to `ComposeFlow` for exactly this.
+- [x] Failures are logged, not toasted. The user's edit is already saved, and the rail keeps showing
+      the queued time — which is still the truth, since a send that wasn't moved really is going out
+      then. Blaming their wait change for a network blip would be worse than a beat of staleness.
+- [x] **Verified end to end in the browser, against the database.** 5 → 6 days moved the pending row
+      from `2026-08-05 04:05Z` to `2026-08-08 04:05Z` and the rail from "Sends 5 Aug" to "Sends 8 Aug";
+      6 → 5 moved it back to `2026-08-07 04:05Z` / "Sends 7 Aug". Network panel confirmed the ordering:
+      `POST sequence_steps` → `resync-schedule` 200 → re-read of `sends`. On the replied lead (one
+      `cancelled` row, two `sent`) a wait change left every row untouched, as intended.
+
+### Phase 9d — Dates instead of day counts in the rail ✅
+
+- [x] "Sends in 3 days" → **"Sends 7 Aug"**, per *"instead of showing 3 days I want a date like 5 Aug"*.
+      Beyond being what was asked for, the day count was quietly unreliable: the scheduler skips days
+      the settings exclude, so a 3-day wait does not reliably land 3 days out, and it forced arithmetic
+      against a today the reader has to remember and can't check. A date is what goes in a calendar.
+- [x] The clock time is kept only within a day either side ("today, 9:35 AM" / "tomorrow, 9:35 AM"),
+      where the minute is the interesting part and the label is short enough to afford it.
+- [x] `formatISTDay` now suppresses the year when it is the current one — "7 Aug", but "21 Jul 2025".
+      Always printing it made every ordinary near-future date four characters longer in a 16 rem rail;
+      never printing it is wrong in a tool that keeps history. The comparison is IST-zoned, so
+      `2026-12-31T18:35Z` correctly reads "1 Jan 2027" — verified along with the other four branches.
+- [x] `relativeISTDays` deleted rather than left as an unused export; the badge was its only caller.
+- [x] Re-measured after the change: longest label 111 px against 129 px available, all on one line —
+      and the new date form is 69 px, well clear even once the rail gains a scrollbar. The tooltip
+      still carries the weekday and exact minute ("Queued for Fri 7 Aug, 9:35 AM IST"), so shortening
+      the label lost nothing.
+
+### Phase 9e — The rail now shows the reply, and a wait change lands instantly ✅
+
+Asked for as two things: *"in the replied, it should show the emails with sent at… then after the
+message the person replied it shows tag replied in the vertical line and rest of the below emails of
+replied tag show won't send replied"* and *"i want optimistic updates like when i update wait day more
+or less, the date in below cards should change immediately, it should sync behind the scenes"*.
+
+- [x] **The timing rule moved into `shared/schedule.ts` as `desiredFollowUpTime`.** Phase 9c fixed the
+      *queue* but left the *display* reading a pending row's `scheduled_at` verbatim — a snapshot taken
+      when the previous email went out — so the date under a card only moved once the resync round trip
+      came back. The rail now recomputes it, and the resync route calls the same function to write it.
+      One definition, so what is on screen and what is in the queue cannot disagree; the route's own
+      ~50-line `desiredTimeFor` was deleted rather than left as a second copy of the rule.
+- [x] It returns `null` — meaning "the row's own time is the best answer there is" — for the opening
+      email, for a row that isn't `pending`, and for a row the sequence has renumbered under.
+- [x] Because `projectSequenceSchedule` re-derives from `steps` on every render, the dates below a wait
+      card change on the **same frame** as the number in it. The resync behind it then moves the row to
+      the date already on screen, rather than the screen waiting on the row.
+- [x] `changeDelay` deliberately does **not** set `busy`. Add and delete rebuild the whole list and
+      renumber positions, so locking the rail against a second click protects something real; a wait is
+      one number on one step and can't collide. Locking it made the +/- buttons dead for a full round
+      trip — precisely the control a user nudges several times in a row.
+- [x] **`StoppedCause` on the `stopped` timing**, so the badge reads **"Won't send — replied"**. Matched
+      on `cause`, not on the prose `reason`: "Won't send" alone is the state without the reason, and on a
+      replied lead every remaining card showed it, which read as several things having gone wrong rather
+      than one good thing having happened.
+- [x] A `pending` row on a replied lead now reports `stopped/replied` rather than a date. The scheduler
+      cancels it on the next reply check, but until that runs the row still says `pending` — and
+      announcing a send date for an email that will never go out is the one mistake the whole hedging
+      scheme exists to prevent. A `cancelled` row on a replied lead attributes the cause to the reply,
+      since that is how `markRepliedAndCancel` ends a sequence.
+- [x] `replyAfterStepId` on the new `SequenceSchedule` return, drawn as a **"Replied" tag on the
+      connector** below the last email that had actually gone out. A reply isn't a property of any one
+      step — it arrives *between* two — and that is the honest place for the line: the steps above it
+      earned it, everything below it is what it called off. Success-coloured, because it is the outcome
+      the tool exists to produce.
+- [x] Caught by the verification script before the browser ever saw it: `replyAfterStepId` was being set
+      on every `sent` step regardless of whether a reply existed, which would have drawn a false marker
+      on any lead with a delivered email. Now gated on `repliedAt`.
+- [x] **Verified in the browser.** Three consecutive `+` clicks all registered (5 → 8 days) with the card
+      below following each one — 7 Aug → 8 → 9 → 10 — and `resync-schedule` answering
+      `moved: [{stepPosition: 4, from: "2026-08-09T04:05Z", to: "2026-08-10T04:05Z"}]`, matching the date
+      on screen. On the replied lead: "Opening email / Sent yesterday, 10:30 PM" → wait → "Follow-up #1 /
+      Sent yesterday, 10:40 PM" → **"↩ Replied"** → wait → "Follow-up #2 / Won't send — replied".
+- [x] That replied lead's `sequence_steps` had been mangled by earlier testing — 2 rows left, against
+      `sends` at positions 0, 2 and 4 — so neither delivered email had a card to render under. Repaired
+      in SQL to the 5-step shape the sends were made from. Worth remembering that rows are matched to
+      steps by **position** (`sends.step_id` is `on delete set null`), so a truncated step list silently
+      loses history rather than erroring.
+
 ## Phase 11 — Tracking
-*Server done; the tunnel test is still open.*
+*Done and verified through a public tunnel, and now from a real inbox — including a real click.*
 
 - [x] `GET /t/o/:trackingId.gif` — 1×1 pixel (42-byte GIF89a), public, no auth. Mounted **before**
       the CORS middleware: an image fetched by a mail client sends no `Origin`, and must not be gated
@@ -708,12 +882,107 @@ role), and applying that template to a recipient brings the file along.
       decoding, since a stored bad URL would have been signed just as happily); a non-UUID id → 400
       rather than a 22P02 out of Postgres.
 - [x] Enable via the existing `trackOpens` / `trackClicks` toggles — `emailRenderer` gates both.
-- [x] Filter `GoogleImageProxy` user agents, dedupe opens per `send_id` (10 s window) — opens are
-      noise, clicks and replies are signal. Clicks are deliberately *not* deduped: a second click is a
-      real second click. `recordOpen` never throws, because the alternative is a broken-image icon in
-      a cold email.
-- [ ] Surface events per lead in the UI
-- [ ] **Verify:** `cloudflared tunnel --url http://localhost:8080` (Gmail can't fetch a pixel from `localhost`), point `TRACKING_BASE_URL` at it, click a link → an `events` row appears
+- [x] ~~Filter `GoogleImageProxy` user agents~~ → **label them, never drop them.** Dedupe opens per
+      `send_id` (10 s window). Clicks are deliberately *not* deduped: a second click is a real second
+      click. `recordOpen` never throws, because the alternative is a broken-image icon in a cold email.
+
+      > ⚠️ **This was a real bug, caught by the first genuine inbox open (2026-08-02).** The owner
+      > opened a message twice and the UI kept showing the old count; both fetches had reached the
+      > server and both were discarded as "proxy prefetch". The premise was wrong: **Gmail serves
+      > every image through GoogleImageProxy, including the fetch a human opening the message
+      > causes.** Filtering that user agent therefore means *Gmail recipients show zero opens
+      > forever* — i.e. most of the list, silently.
+      >
+      > The log is unambiguous. Delivered 04:23:05 → **no** pixel request at delivery, so Gmail did
+      > not prefetch at all; then exactly one request per open (04:32:54, 04:33:44). A 1:1 match with
+      > human action.
+      >
+      > The proxy marker now only annotates: `lead_engagement.proxy_opens` counts proxied opens so the
+      > UI can hedge the *single*-open case, which is where the ambiguity actually lives (a lone open
+      > seconds after delivery may be Apple Mail Privacy Protection). It is **not** a noise count to
+      > subtract. The real signal remains what it always was: **two or more opens**.
+      >
+      > Why the tunnel test missed it: every check used either a browser UA (recorded) or a
+      > Gmail-proxy UA where "no event" was *asserted to be correct*. The test encoded the bug.
+- [x] Surface events per lead in the UI — an **Opens / clicks** column on the Database table, fed by
+      the `lead_engagement` view (`useEngagement` → `EngagementCell`).
+
+      **Counts, not booleans**, and that is the whole point: one open is roughly "delivered", because
+      Apple Mail Privacy Protection fetches the pixel before anybody has looked at the message. A
+      second open is a person coming back to it. So the cell colours on `opens >= 2` and the tooltip
+      says which of the two you're looking at.
+
+      A **view**, not counter columns on `leads`: `events` already holds one row per open/click/reply,
+      so a counter would be a second source of truth that the tracking endpoints could fail to
+      increment. `security_invoker = true` (unlike `gmail_accounts_public`) — the browser is granted
+      SELECT on `sends`/`events` and their `read_own` policies already scope the rows.
+
+      Two subtleties worth keeping:
+      - `open_count` is a **plain row count**. Dedupe happens in exactly one place, `recordOpen`'s
+        10 s window; by the time a row exists it has earned its place. This originally had a *second*
+        layer — `count(distinct (send_id, date_trunc('minute', created_at)))` — which was removed
+        2026-08-02, see the ⚠️ below.
+      - `distinct_links` sits beside `click_count` for the same reason: three clicks on one link is a
+        weaker signal than one click on three.
+
+      > ⚠️ **The per-minute open bucket was wrong and is gone.** Reported by the owner: opening an
+      > email twice moved the count by one. Every fetch *was* recorded — the view collapsed pairs that
+      > shared a wall-clock minute. Bucketing on the clock rather than on elapsed time is arbitrary in
+      > both directions: fetches at 04:45:59 and 04:46:01 (2 s apart) counted as **two** opens, while
+      > 04:45:10 and 04:45:59 (49 s apart) counted as **one**. Worse, it discarded deliberate re-opens
+      > — the single clearest proof of a human, and the whole reason the count exists. Three real
+      > re-opens 11–16 s apart were each silently swallowed. `total_opens` went with it: with the 10 s
+      > window as the only dedupe, it was equal to `open_count` by construction, and a column
+      > guaranteed to duplicate another invites false conclusions from the difference.
+      >
+      > Lesson: a dedupe rule has to be expressed in the units of the thing it models. "Two loads
+      > close together are one read" is about *elapsed time between them*, never about which minute
+      > they landed in.
+
+      A lead with **no row at all** renders `—`, not `0`. "0 opens" is a claim about an email that
+      went out; making it about a draft would be a lie. The view left-joins `events` onto `sends`, so
+      anyone who has been emailed has a row even when every count is zero.
+
+      Also un-gated the Settings **Tracking** section here — it still read "Coming soon" with both
+      switches disabled, which made the feature unreachable through the UI.
+- [x] **Verified through a public tunnel** (`cloudflared tunnel --url http://localhost:8080`, with
+      `TRACKING_BASE_URL` pointed at it and the server restarted — `env.ts` reads it once at boot):
+      - A Gmail-image-proxy User-Agent → 42-byte `image/gif`, and an `events` row with the proxy user
+        agent stored. (This assertion was **inverted** when first written — see the warning above.)
+      - A browser User-Agent → GIF **and** an open row. An immediate repeat → GIF, no second row
+        (the 10 s dedupe). Two hits 12 s apart inside one clock minute → both recorded, but at the
+        time the view reported `open_count` 3 against 4 rows. That discrepancy was read as the
+        feature working; it was the minute-bucket bug (⚠️ above) showing itself, and the real
+        re-opens it was eating went unnoticed for another three hours.
+      - 3 clicks across 2 links → `click_count` 3, `distinct_links` 2; the repeat click on the *same*
+        link was counted, since clicks are never deduped.
+      - Tampered URL, missing `s`, and a signature replayed onto another tracking id → 400 with no
+        redirect, all three over the public tunnel rather than only against localhost.
+      - The counts then appeared in the UI as `3 / 3` with both tooltips reading correctly, and
+        `last_open_at` converted to IST properly (04:20:15 UTC → "2 Aug, 9:50 AM IST").
+
+      > ⚠️ **Use cloudflared, not ngrok.** ngrok's free tier answers any browser-like User-Agent —
+      > which is exactly what Gmail's image proxy sends — with an HTML interstitial
+      > (`Ngrok-Error-Code: ERR_NGROK_6024`) instead of forwarding. The pixel then never reaches the
+      > server and **no event is ever recorded**, so the tunnel silently breaks the one thing it was
+      > set up to test. That decision happens at ngrok's *edge*, before traffic policy runs: a policy
+      > file injecting `ngrok-skip-browser-warning` was confirmed to be applied to forwarded requests
+      > and *still* not defeat the interstitial. Passing the header by hand with `curl` works, which
+      > makes it an easy false positive to chase. `trycloudflare.com` needs no account and no header.
+- [x] **Verified from the real inbox** — and this is the check that mattered. The owner opened
+      "Following up on Pixel Works" (send `fb276fc2`, thread `19fc0a58ffe6298b`) twice; both pixel
+      fetches reached the server 1:1 with the opens, which is what exposed the proxy-filter bug above.
+      Nothing before this step could have caught it, because every synthetic test either used a
+      browser UA or asserted the wrong expectation for a proxy UA.
+
+      Still worth doing once more after the fix: a fresh send, opened twice, to watch the count go
+      `1 → 2` live. **The tunnel URL changes every time `cloudflared` restarts** and is baked into the
+      delivered HTML, so a restart means re-sending, not just re-pointing `TRACKING_BASE_URL`.
+- [x] **A real click from a mail client, confirmed.** The synthetic tunnel checks above were all
+      `curl`; these were not. Events 17, 18, 25 and 28 carry an Android Chrome User-Agent from the
+      owner's own IP (`14.194.135.206`) across both links — the signed redirect works from a phone's
+      inbox, which is the signal that matters most. Found while investigating the open-count bug, not
+      by looking for it.
 
 ## Phase 12 — Deploy
 *Decide only once Phases 0–11 work locally.*

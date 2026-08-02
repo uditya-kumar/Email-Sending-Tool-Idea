@@ -200,3 +200,27 @@ export interface CancelResult {
 export async function cancelLead(leadId: string): Promise<CancelResult> {
   return request<CancelResult>(`/api/leads/${leadId}/cancel`, { method: "POST" })
 }
+
+export interface ResyncScheduleResult {
+  leadId: string
+  /** The sends that actually moved — empty when everything was already correct. */
+  moved: Array<{ stepPosition: number; from: string; to: string }>
+}
+
+/**
+ * Re-time an already-queued follow-up against the sequence as it now stands.
+ *
+ * Needed because a queued send is a snapshot: its `scheduled_at` was computed from
+ * the wait in force when the previous email went out, so editing that wait
+ * afterwards changes the step and leaves the send row where it was. `sends` is
+ * SELECT-only to the browser, so only the server can move it.
+ *
+ * Safe to call after any edit that might have moved something — it compares before
+ * it writes, and reports only what it changed. Rows that are sending, sent or
+ * finished are never touched.
+ */
+export async function resyncSchedule(leadId: string): Promise<ResyncScheduleResult> {
+  return request<ResyncScheduleResult>(`/api/leads/${leadId}/resync-schedule`, {
+    method: "POST",
+  })
+}

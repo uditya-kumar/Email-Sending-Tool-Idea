@@ -502,6 +502,70 @@ revoke all on public.oauth_states  from anon, authenticated;
 revoke all on public.gmail_accounts_public from anon;
 grant select on public.gmail_accounts_public to authenticated;
 
+-- ═══════════════════════════════════════════════════════════════════════════
+--  lead_engagement — per-recipient open/click counts for the Database table
+--
+--  A view rather than counter columns on `leads`, because `events` already
+--  stores one row per event: a count is derivable, and a denormalised counter
+--  would be a second source of truth that the tracking endpoints could fail to
+--  increment. Aggregating in Postgres also beats shipping every event row to
+--  the browser to be counted there.
+--
+--  The counts are per LEAD, not per send: a lead's sequence is several emails
+--  in one thread, and "did this person engage" is the question the table
+--  answers. One open is often Apple Mail Privacy Protection or a proxy prefetch,
+--  while a second read later is a human — so it is the open *count*, not the
+--  fact of an open, that the UI leans on.
+--
+--  `open_count` is a plain row count. Deduplication happens once, in
+--  `recordOpen`, which refuses a second open on the same send within 10 seconds;
+--  by the time a row exists it has already earned its place. This view used to
+--  re-dedupe on `date_trunc('minute', created_at)`, which was wrong twice over:
+--  it bucketed on the wall clock rather than elapsed time (two fetches 2s apart
+--  either side of :00 counted twice, two fetches 49s apart inside one minute
+--  counted once), and it discarded deliberate re-opens — the exact evidence of a
+--  human that the count exists to surface. Removed 2026-08-02 after three real
+--  re-opens 11–16s apart were each silently collapsed.
+--
+--  `proxy_opens` counts opens fetched through a provider's image proxy. Note
+--  this is NOT a noise count to subtract: Gmail serves every image through
+--  GoogleImageProxy, including the fetch a human opening the message causes, so
+--  a Gmail recipient's opens are all "proxy" opens and are all real. It exists
+--  only so the UI can hedge the *single*-open case, where the ambiguity actually
+--  lives (a lone open seconds after delivery is likely a prefetch).
+--
+--  security_invoker = true (unlike gmail_accounts_public): the browser is
+--  allowed to select `events` and `sends` directly, so the caller's own RLS
+--  policies already scope this correctly and the view needs no auth.uid()
+--  filter of its own. It has no privileges the caller lacks.
+-- ═══════════════════════════════════════════════════════════════════════════
+create or replace view public.lead_engagement
+with (security_invoker = true) as
+  select
+    s.lead_id,
+    -- One row, one open. See the header note on why there is no second dedupe
+    -- layer here: `recordOpen`'s 10s window is the only one, and adding a
+    -- coarser bucket on top of it threw away real re-opens.
+    count(*) filter (where e.type = 'open')::int  as open_count,
+    -- Kept in sync with PROXY_AGENT_MARKERS in server/src/data/events.ts.
+    count(*) filter (
+      where e.type = 'open'
+        and lower(coalesce(e.user_agent, '')) ~ 'googleimageproxy|yahoomailproxy|ggpht\.com'
+    )::int as proxy_opens,
+    count(*) filter (where e.type = 'click')::int as click_count,
+    count(distinct case when e.type = 'click' then e.url end)::int as distinct_links,
+    count(*) filter (where e.type = 'reply')::int as reply_count,
+    max(e.created_at) filter (where e.type = 'open')  as last_open_at,
+    max(e.created_at) filter (where e.type = 'click') as last_click_at
+  from public.sends s
+  -- LEFT, so a lead that was sent to but never engaged still gets a row of
+  -- zeroes. An absent row would be indistinguishable from "not sent yet".
+  left join public.events e on e.send_id = s.id
+  group by s.lead_id;
+
+revoke all on public.lead_engagement from anon;
+grant select on public.lead_engagement to authenticated;
+
 -- The daily cap is the one gmail_accounts field the UI edits (SenderLimitDialog).
 create or replace function public.set_daily_limit(p_account_id uuid, p_limit int)
 returns void

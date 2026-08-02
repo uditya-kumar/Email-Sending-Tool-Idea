@@ -167,6 +167,41 @@ export class SendQueue {
   }
 
   /**
+   * Move a send that is **still** pending, and report whether it moved.
+   *
+   * Separate from `reschedule` because of who calls it: that one runs inside the
+   * tick, on a row this process has already claimed, so nothing else can be
+   * touching it. This one runs from a route while the tick is running
+   * independently — and `claim_due_sends` flips `pending` → `sending` atomically,
+   * so a plain update by id could land on a row that is being sent *right now*,
+   * resetting it to pending and delivering the same email twice.
+   *
+   * The `status = 'pending'` filter is what makes that impossible: if the claim
+   * won the race, this matches zero rows and does nothing. Only `scheduled_at` is
+   * written — a pending row already has no claim, and rewriting `status` here
+   * would be the very thing the filter exists to prevent.
+   */
+  async rescheduleIfPending(sendId: string, at: Date, reason: string): Promise<boolean> {
+    const moved = await unwrapMany(
+      "reschedule pending send",
+      db
+        .from("sends")
+        .update({ scheduled_at: at.toISOString() })
+        .eq("id", sendId)
+        .eq("status", "pending")
+        .select("id")
+    )
+
+    if (moved.length === 0) {
+      log.debug({ sendId, reason }, "Send no longer pending; left where it was")
+      return false
+    }
+
+    log.info({ sendId, at: at.toISOString(), reason }, "Pending send moved")
+    return true
+  }
+
+  /**
    * Queue the next email step in a lead's sequence.
    *
    * Called only **after** the previous step has actually gone out (lazy

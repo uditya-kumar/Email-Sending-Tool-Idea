@@ -6,8 +6,9 @@ import { listAccountsForUser } from "../email/accounts.ts"
 import { AccountReauthRequiredError, ConflictError, NotFoundHttpError } from "../http/errors.ts"
 import { route } from "../http/handler.ts"
 import { idParamsSchema, launchSchema, type IdParams, type LaunchBody } from "../http/schemas.ts"
-import { firstSendAt } from "../scheduler/schedule.ts"
+import { desiredFollowUpTime, firstSendAt } from "../scheduler/schedule.ts"
 import { sendQueue } from "../scheduler/send-queue.ts"
+import { sequenceSendFromRow } from "../../../shared/mappers.ts"
 import { firstEmailStep } from "../../../shared/sequence.ts"
 import { loggerFor } from "../logger.ts"
 import type { GmailAccountRow } from "../db.ts"
@@ -136,6 +137,96 @@ leadsRouter.post(
     log.info({ leadId: lead.id, cancelled, anySent }, "Lead cancelled")
 
     return { leadId: lead.id, cancelled, status: anySent ? "sent" : "draft" }
+  })
+)
+
+/**
+ * Re-time the lead's already-queued follow-up against the sequence as it stands
+ * now.
+ *
+ * Exists because a queued send is a **snapshot**. `enqueueNextStep` computes
+ * `scheduled_at` from the wait that was in place the moment the previous email
+ * went out, and nothing afterwards revisits it — so editing "wait 3 days" to
+ * "wait 5 days" saved the step but left the send row sitting in the old slot,
+ * and the sidebar (correctly, since that row is what the scheduler will fire)
+ * went on reporting the old date.
+ *
+ * A route rather than a frontend write because `sends` is SELECT-only to the
+ * browser: the scheduler is its only writer, which is exactly what makes a row
+ * there trustworthy. Idempotent — call it after any edit that could move a send,
+ * and it reports what it actually changed.
+ */
+leadsRouter.post(
+  "/:id/resync-schedule",
+  route<unknown, IdParams>({ params: idParamsSchema }, async ({ params, req }) => {
+    const user = currentUser(req)
+
+    const lead = await findLead(params.id, user.id)
+    if (!lead) throw new NotFoundHttpError("That lead no longer exists.")
+
+    const sends = await sendQueue.listForLead(lead.id)
+    const [steps, settings] = await Promise.all([
+      loadSequence(lead.id),
+      loadSettings(user.id),
+    ])
+
+    const moved: Array<{ stepPosition: number; from: string; to: string }> = []
+
+    /*
+     * A loop, though the lazy queue means there is at most one pending follow-up
+     * at a time (see `enqueueNextStep`). Written to handle the set rather than
+     * asserting the invariant, because the cost of being wrong about it is a
+     * silently unmoved send — and each row is resolved independently against the
+     * email that precedes it, so a second one would be handled correctly too.
+     */
+    for (const send of sends) {
+      // `sending` and `sent` are deliberately untouched: one is in flight and the
+      // other is in someone's inbox, and neither can be re-timed by editing a
+      // wait. `cancelled` / `failed` / `skipped` are over.
+      if (send.status !== "pending") continue
+
+      /*
+       * The same function the compose rail calls to decide what date to *show*, so
+       * the row this writes and the date the user was looking at cannot disagree.
+       * `sends` rows are mapped to the domain shape because that is what the shared
+       * rule takes — see `sequenceSendFromRow`.
+       */
+      const desired = desiredFollowUpTime({
+        send: sequenceSendFromRow(send),
+        sends: sends.map(sequenceSendFromRow),
+        steps,
+        sendTimeIST: lead.sendTimeIST,
+        followUpDays: settings.followUpDays,
+      })
+
+      if (!desired) continue
+
+      const from = new Date(send.scheduled_at)
+      // To the minute: `scheduled_at` has second precision and both sides are
+      // built from the same "HH:mm", so an equal time is byte-equal — but
+      // comparing instants rather than strings keeps that from being load-bearing.
+      if (desired.getTime() === from.getTime()) continue
+
+      const applied = await sendQueue.rescheduleIfPending(
+        send.id,
+        desired,
+        "the sequence's waits or send time changed"
+      )
+
+      if (applied) {
+        moved.push({
+          stepPosition: send.step_position,
+          from: from.toISOString(),
+          to: desired.toISOString(),
+        })
+      }
+    }
+
+    if (moved.length > 0) {
+      log.info({ leadId: lead.id, moved }, "Re-timed queued sends after an edit")
+    }
+
+    return { leadId: lead.id, moved }
   })
 )
 

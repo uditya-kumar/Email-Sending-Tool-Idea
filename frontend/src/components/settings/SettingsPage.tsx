@@ -65,7 +65,10 @@ function ToggleRow({
   description: string
   checked: boolean
   onChange: (v: boolean) => void
-  disabled?: boolean
+  // `| undefined` spelled out because `exactOptionalPropertyTypes` makes "absent"
+  // and "present but undefined" different types, and callers pass an optional prop
+  // straight through. Same as `WeekdayRow` below.
+  disabled?: boolean | undefined
 }) {
   return (
     <div
@@ -316,23 +319,25 @@ export function SettingsPage({
       <section>
         <SectionHeading
           title="Tracking"
-          badge="Coming soon"
-          description="Open and click tracking isn't wired up yet. Until then, replies are the engagement signal."
+          description="Counted per recipient and shown in the Database table's Opens / clicks column. Applies to emails sent from now on — a message already delivered can't be changed."
         />
         <div className="divide-y rounded-xl border bg-card">
           <ToggleRow
             title="Track email opens"
-            description="See when your recipients open your emails. May require consent depending on region."
+            // The caveat is the useful half: Apple Mail Privacy Protection and
+            // Gmail's proxy fetch the pixel before anyone reads anything, which
+            // is why the table shows a count rather than "Opened".
+            description="Adds an invisible image to each email. One open often means a mail client pre-loading images; a second open is a real read."
             checked={settings.trackOpens}
             onChange={(v) => onSettingsChange({ trackOpens: v })}
-            disabled
+            disabled={settingsLoading}
           />
           <ToggleRow
             title="Track link clicks"
-            description="See when your recipients click the links in your emails."
+            description="Routes links through a redirect so clicks are counted. Unlike opens, nothing clicks a link automatically — this is the signal to trust."
             checked={settings.trackClicks}
             onChange={(v) => onSettingsChange({ trackClicks: v })}
-            disabled
+            disabled={settingsLoading}
           />
         </div>
       </section>

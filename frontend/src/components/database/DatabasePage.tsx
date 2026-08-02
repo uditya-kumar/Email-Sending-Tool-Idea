@@ -30,12 +30,15 @@ import { LEAD_COLUMNS } from "./leadColumns"
 import { LeadDialog } from "./LeadDialog"
 import { leadsToCsv, parseLeadsCsv, type RejectedRow } from "@/lib/csv"
 import type { NewLead } from "@/lib/leads"
+import type { EngagementStore } from "@/lib/engagement"
 import type { LeadsStore } from "@/lib/use-leads"
 import type { Lead } from "@/lib/types"
 
 interface DatabasePageProps {
   /** Leads plus their persistence — see `useLeads`. */
   store: LeadsStore
+  /** Per-recipient open/click counts — see `useEngagement`. */
+  engagementStore: EngagementStore
   /** Opens the per-recipient compose flow (Content → Preview → Launch). */
   onSend: (lead: Lead) => void
   /** Cancels a launched recipient's pending sends. */
@@ -89,6 +92,7 @@ function reportRejected(rejected: RejectedRow[]) {
  */
 export function DatabasePage({
   store,
+  engagementStore,
   onSend,
   onCancelSchedule,
   onLeadDeleted,
@@ -151,6 +155,7 @@ export function DatabasePage({
       },
       onSend,
       onCancelSchedule,
+      engagement: engagementStore.engagement,
     },
   })
 

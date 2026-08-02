@@ -545,6 +545,27 @@ export type Database = {
         }
         Relationships: []
       }
+      lead_engagement: {
+        Row: {
+          click_count: number | null
+          distinct_links: number | null
+          last_click_at: string | null
+          last_open_at: string | null
+          lead_id: string | null
+          open_count: number | null
+          proxy_opens: number | null
+          reply_count: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sends_lead_id_fkey"
+            columns: ["lead_id"]
+            isOneToOne: false
+            referencedRelation: "leads"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       claim_due_sends: {
