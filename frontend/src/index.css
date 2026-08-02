@@ -234,6 +234,20 @@
   white-space: nowrap;
 }
 
+/*
+ * Preview body. Mirrors what `EmailRenderer.inlineParagraphStyles` writes into the
+ * sent HTML, so this card and the delivered email break lines the same way — the
+ * preview exists to be trusted.
+ */
+.prose-email p {
+  margin: 0;
+}
+/* An empty <p> is how Tiptap stores a deliberate blank line, and an empty block
+   has no height of its own. The renderer gives the email version a <br>. */
+.prose-email p:empty::after {
+  content: "\00a0";
+}
+
 /* Tiptap editor content styling */
 .ProseMirror {
   outline: none;
@@ -241,8 +255,19 @@
   font-size: 0.95rem;
   line-height: 1.6;
 }
+/*
+ * No margin: one Enter is one new line, not a blank line's worth of gap.
+ *
+ * Tiptap wraps every line in its own <p>, so any margin here is spacing the user
+ * never asked for — and the delivered email showed it too, because a mail client
+ * applies its own <p> margin on top (Gmail's is a full 1em). A blank line is an
+ * empty paragraph instead, which is the same thing Gmail's own composer does.
+ *
+ * `EmailRenderer.inlineParagraphStyles` pins the same values into the sent HTML.
+ * Changing one without the other makes the editor lie about the email.
+ */
 .ProseMirror p {
-  margin: 0 0 0.75rem;
+  margin: 0;
 }
 .ProseMirror a {
   color: var(--accent);

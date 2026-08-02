@@ -231,16 +231,30 @@ export class SendQueue {
    * `sending` rows are deliberately left alone: one is in flight right now, and
    * cancelling it in the database would not unsend the email while making the row
    * disagree with the recipient's inbox.
+   *
+   * ## Why this DELETEs rather than setting `status = 'cancelled'`
+   *
+   * `sends_lead_step_key` is a unique index on `(lead_id, step_position)` with no
+   * status filter, so a row left behind keeps owning that step forever. `enqueue`
+   * would then collide with it on every future launch, return null, and the lead
+   * could never be scheduled again — cancel once to reword an email and that
+   * recipient is permanently unsendable.
+   *
+   * Deleting is safe because the filter only ever matches `pending` rows, and a
+   * pending row records nothing: `subject_rendered`, `body_html_rendered` and
+   * `sent_at` are all still null because rendering happens at send time. It is a
+   * reservation, not history. Anything that actually went out is `sent` and is
+   * never touched here.
+   *
+   * The alternative — making the index partial so cancelled rows don't reserve the
+   * slot — does not work: Postgres cannot infer a partial unique index from
+   * `ON CONFLICT (lead_id, step_position)` and raises 42P10, which would break
+   * every enqueue instead.
    */
   async cancelPendingFor(leadId: string): Promise<number> {
     const cancelled = await unwrapMany(
       "cancel pending sends",
-      db
-        .from("sends")
-        .update({ status: "cancelled" })
-        .eq("lead_id", leadId)
-        .eq("status", "pending")
-        .select("id")
+      db.from("sends").delete().eq("lead_id", leadId).eq("status", "pending").select("id")
     )
 
     if (cancelled.length > 0) {

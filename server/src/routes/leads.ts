@@ -84,6 +84,17 @@ leadsRouter.post(
           (row) => row.step_position === opening.position
         )
 
+        /*
+         * Still mark the lead `scheduled` when the existing row is live. Returning
+         * early without this left the lead on `draft` while a real pending send sat
+         * in the queue, so the table showed "Draft" for an email that was going to
+         * go out — and the optimistic badge reverting on the next refetch read as
+         * the schedule having silently vanished.
+         */
+        if (existing?.status === "pending" || existing?.status === "sending") {
+          await setLeadStatus(lead.id, "scheduled")
+        }
+
         return {
           leadId: lead.id,
           alreadyQueued: true,

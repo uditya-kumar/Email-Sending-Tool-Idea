@@ -5,6 +5,7 @@ import { SendTimePicker } from "@/components/common/SendTimePicker"
 import { fullName } from "@/lib/leads"
 import { SequenceSidebar } from "./SequenceSidebar"
 import { EmailEditor } from "./EmailEditor"
+import { useSubjectInsert } from "./use-subject-insert"
 import { SendTestPopover } from "./SendTestPopover"
 import { ApplyTemplateMenu } from "./ApplyTemplateMenu"
 import { AttachmentBar } from "./AttachmentBar"
@@ -78,6 +79,17 @@ export function ContentStep({
   const active = steps.find((s) => s.id === activeStepId && s.kind === "email")
   const isFollowUp = active ? active.name.toLowerCase().includes("follow") : false
 
+  /*
+   * Routes an inserted merge tag to the subject when the caret was there. The button
+   * that inserts it lives in the editor's toolbar, so this component — which owns
+   * both fields — is the only place that can tell the two apart.
+   */
+  const subjectInsert = useSubjectInsert({
+    subject: active?.subject ?? "",
+    onChange: (subject) => active && onUpdateStep(active.id, { subject }),
+    resetKey: activeStepId,
+  })
+
   return (
     <div className="flex min-h-0 flex-1">
       <SequenceSidebar
@@ -142,6 +154,7 @@ export function ContentStep({
                     Subject:
                   </span>
                   <Input
+                    {...subjectInsert.subjectProps}
                     value={active.subject ?? ""}
                     onChange={(e) =>
                       onUpdateStep(active.id, { subject: e.target.value })
@@ -173,6 +186,9 @@ export function ContentStep({
                   key={active.id}
                   bodyHtml={active.bodyHtml ?? ""}
                   onChange={(html) => onUpdateStep(active.id, { bodyHtml: html })}
+                  insertTarget={subjectInsert.insertTarget}
+                  onInsertOutside={subjectInsert.insertIntoSubject}
+                  onBodyFocus={subjectInsert.onBodyFocus}
                 />
 
                 {/*

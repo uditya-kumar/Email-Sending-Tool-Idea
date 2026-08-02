@@ -5,6 +5,7 @@ import { AttachmentBar } from "@/components/compose/AttachmentBar"
 import { SequenceSidebar } from "@/components/compose/SequenceSidebar"
 import { EmailEditor } from "@/components/compose/EmailEditor"
 import { SendTestPopover } from "@/components/compose/SendTestPopover"
+import { useSubjectInsert } from "@/components/compose/use-subject-insert"
 import { TemplateSidebar } from "./TemplateSidebar"
 import { RenameTemplateDialog } from "./RenameTemplateDialog"
 import {
@@ -73,6 +74,19 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
   const isFollowUp = activeStep
     ? activeStep.name.toLowerCase().includes("follow")
     : false
+
+  /*
+   * Same subject/body pair as the compose Content step, so it gets the same
+   * attribute-insert routing — the toolbar button can't see the subject field on its
+   * own. Keyed on template *and* step: switching templates changes the subject under
+   * it just as switching steps does.
+   */
+  const subjectInsert = useSubjectInsert({
+    subject: activeStep?.subject ?? "",
+    onChange: (subject) =>
+      activeStep && store.editStep(activeTemplateId, activeStep.id, { subject }),
+    resetKey: `${activeTemplateId}:${activeStepId}`,
+  })
 
   /** Switch templates. The step falls back to that template's first email. */
   function selectTemplate(id: string) {
@@ -202,6 +216,7 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
                         Subject:
                       </span>
                       <Input
+                        {...subjectInsert.subjectProps}
                         value={activeStep.subject ?? ""}
                         onChange={(e) =>
                           store.editStep(template.id, activeStep.id, {
@@ -234,6 +249,9 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
                       onChange={(html) =>
                         store.editStep(template.id, activeStep.id, { bodyHtml: html })
                       }
+                      insertTarget={subjectInsert.insertTarget}
+                      onInsertOutside={subjectInsert.insertIntoSubject}
+                      onBodyFocus={subjectInsert.onBodyFocus}
                     />
 
                     {/*

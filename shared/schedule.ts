@@ -508,6 +508,14 @@ function timingFromSend(input: {
     }
     case "failed":
       return { kind: "blocked", reason: "the previous email couldn't be sent" }
+    /*
+     * Reached only by rows `sendQueue.cancel` marked individually — a reply landing
+     * between the claim and the send. A *pending* row that is cancelled, whether by
+     * the user or by reply detection, is deleted instead of marked, because the
+     * `(lead_id, step_position)` unique index would otherwise let a dead row block
+     * that step from ever being queued again. So this case is rarer than it looks,
+     * and a cancelled step usually shows as `projected` again rather than stopped.
+     */
     case "cancelled":
       return {
         kind: "stopped",

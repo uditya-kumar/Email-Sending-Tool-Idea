@@ -21,6 +21,19 @@ import { MergeTagHighlight } from "./merge-tag-highlight"
 interface EmailEditorProps {
   bodyHtml: string
   onChange: (html: string) => void
+  /**
+   * Where "Insert attribute" should put the tag.
+   *
+   * The button lives in this toolbar but the subject line does not, so the caller —
+   * which owns both fields — says which one the caret was last in. `"subject"` hands
+   * the tag to `onInsertOutside` instead of dropping it into the body, which is what
+   * a user who clicked into Subject and then hit the button is asking for.
+   */
+  insertTarget?: "body" | "subject" | undefined
+  /** Receives the tag when `insertTarget` isn't the body. */
+  onInsertOutside?: ((tag: string) => void) | undefined
+  /** The body took focus — the caller tracks this to resolve `insertTarget`. */
+  onBodyFocus?: (() => void) | undefined
 }
 
 /** Count words in a block of text. */
@@ -56,7 +69,13 @@ function ToolbarButton({
 }
 
 /** Rich-text email body editor (Tiptap) with a Hunter-style toolbar + footer. */
-export function EmailEditor({ bodyHtml, onChange }: EmailEditorProps) {
+export function EmailEditor({
+  bodyHtml,
+  onChange,
+  insertTarget = "body",
+  onInsertOutside,
+  onBodyFocus,
+}: EmailEditorProps) {
   const [attrOpen, setAttrOpen] = useState(false)
   const [words, setWords] = useState(0)
 
@@ -71,6 +90,9 @@ export function EmailEditor({ bodyHtml, onChange }: EmailEditorProps) {
     content: bodyHtml || "",
     // Seed the initial count once the editor mounts with existing content.
     onCreate: ({ editor }) => setWords(countWords(editor.getText())),
+    // Told to the caller rather than tracked here, because the thing it decides —
+    // body or subject — is a question only the caller can answer.
+    onFocus: () => onBodyFocus?.(),
     onUpdate: ({ editor }) => {
       onChange(editor.getHTML())
       setWords(countWords(editor.getText()))
@@ -83,6 +105,16 @@ export function EmailEditor({ bodyHtml, onChange }: EmailEditorProps) {
   if (!editor) return null
 
   function insertTag(tag: string) {
+    /*
+     * Route to the subject when that is where the caret was. Without this the tag
+     * always landed in the body, so clicking into Subject and reaching for the
+     * button put `{{first_name}}` in the message instead of the subject line — and
+     * then needed deleting from one field and retyping into the other.
+     */
+    if (insertTarget !== "body" && onInsertOutside) {
+      onInsertOutside(tag)
+      return
+    }
     editor?.chain().focus().insertContent(`${tag} `).run()
   }
 

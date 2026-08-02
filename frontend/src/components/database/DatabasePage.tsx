@@ -28,6 +28,7 @@ import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { LEAD_COLUMNS } from "./leadColumns"
 import { LeadDialog } from "./LeadDialog"
+import { CancelScheduleDialog } from "./CancelScheduleDialog"
 import { leadsToCsv, parseLeadsCsv, type RejectedRow } from "@/lib/csv"
 import type { NewLead } from "@/lib/leads"
 import type { EngagementStore } from "@/lib/engagement"
@@ -102,6 +103,8 @@ export function DatabasePage({
   const [sorting, setSorting] = useState<SortingState>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingLead, setEditingLead] = useState<Lead | null>(null)
+  /** The recipient whose schedule is about to be cancelled; null = no dialog. */
+  const [cancellingLead, setCancellingLead] = useState<Lead | null>(null)
   /** True while a CSV is being parsed and inserted. */
   const [importing, setImporting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -154,7 +157,10 @@ export function DatabasePage({
         setDialogOpen(true)
       },
       onSend,
-      onCancelSchedule,
+      // Opens the confirmation rather than cancelling outright — the button sits
+      // where Send/Edit/Delete are on every other row, so a stray click would
+      // otherwise discard a queued email with no way back to the same send time.
+      onCancelSchedule: setCancellingLead,
       engagement: engagementStore.engagement,
     },
   })
@@ -386,6 +392,12 @@ export function DatabasePage({
         onOpenChange={setDialogOpen}
         lead={editingLead}
         onSave={handleSaveLead}
+      />
+
+      <CancelScheduleDialog
+        lead={cancellingLead}
+        onOpenChange={(open) => !open && setCancellingLead(null)}
+        onConfirm={onCancelSchedule}
       />
     </div>
   )

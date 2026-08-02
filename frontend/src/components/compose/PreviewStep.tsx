@@ -228,8 +228,11 @@ function RenderedEmail({ step, lead }: { step: SequenceStep; lead: Lead }) {
           delete the step.
         </p>
       ) : (
+        // Paragraph spacing is left to `.prose-email` in index.css rather than set
+        // with a `[&_p]:mb-3` here, because that rule is the one kept in step with
+        // the inline styles the renderer puts into the real email.
         <div
-          className="prose-email px-4 py-4 text-sm leading-relaxed [&_a]:text-accent [&_a]:underline [&_p]:mb-3"
+          className="prose-email px-4 py-4 text-sm leading-relaxed [&_a]:text-accent [&_a]:underline"
           dangerouslySetInnerHTML={{ __html: bodyHtml }}
         />
       )}

@@ -81,7 +81,7 @@ export class EmailRenderer {
      * documented consequence of typing one in.
      */
     const subject = rawSubject ? renderTags(rawSubject, lead) : inherited
-    let html = renderTags(rawBody, lead, { html: true })
+    let html = inlineParagraphStyles(renderTags(rawBody, lead, { html: true }))
 
     const trackingId = options.trackingId
 
@@ -116,6 +116,41 @@ export class EmailRenderer {
   }
 }
 
+/**
+ * Kill the mail client's default paragraph margin.
+ *
+ * Tiptap puts every line in its own `<p>`, and a mail client styles a bare `<p>`
+ * with about `1em` top and bottom — so a message the user wrote as four
+ * consecutive lines arrived with a blank line's worth of gap between each of them.
+ * The editor had the same gap from its own stylesheet; that rule is now `margin: 0`
+ * too (`.ProseMirror p` in `frontend/src/index.css`), and these two have to agree
+ * or the compose window stops predicting the email.
+ *
+ * Done as an inline `style` because **email clients strip `<style>` blocks** —
+ * Gmail's web client drops `<head>` entirely — so a stylesheet would fix the
+ * preview and change nothing about what lands in the inbox.
+ *
+ * An empty paragraph is how Tiptap records a deliberate blank line, and a `<p>`
+ * with no content collapses to zero height. It gets a `<br>` so the line the user
+ * left blank survives.
+ */
+function inlineParagraphStyles(html: string): string {
+  const $ = cheerio.load(html, null, false)
+
+  $("p").each((_i, element) => {
+    const p = $(element)
+    // Appended to any existing style rather than replacing it: nothing sets one
+    // today, but silently discarding a future inline style would be a bad trade
+    // for one saved concatenation.
+    const existing = p.attr("style")
+    p.attr("style", existing ? `${existing};margin:0` : "margin:0")
+
+    if (p.text().trim() === "" && p.children().length === 0) p.html("<br />")
+  })
+
+  return $.html()
+}
+
 function pixelTag(url: string): string {
   return `<img src="${url}" width="1" height="1" alt="" style="display:block" />`
 }
@@ -148,9 +183,23 @@ export function htmlToText(html: string): string {
   })
 
   $("br").replaceWith("\n")
-  // Block elements become paragraph breaks; without this every paragraph runs
-  // into the next one.
-  $("p, div, li, h1, h2, h3, h4, h5, h6, blockquote").each((_i, element) => {
+
+  /*
+   * One newline per block, not two.
+   *
+   * Tiptap makes every line its own `<p>`, so a break per paragraph used to double
+   * every line break in the text part — the same too-much-gap problem the HTML had,
+   * except no CSS can fix it here. A blank line the user actually typed is an empty
+   * paragraph, and `inlineParagraphStyles` has already given that its own `<br>`,
+   * so deliberate gaps still come through.
+   *
+   * Headings and blockquotes keep the double break: those genuinely are separated
+   * sections, and Tiptap can't emit a run of them one-per-line the way it does `<p>`.
+   */
+  $("p, div, li").each((_i, element) => {
+    $(element).replaceWith(`${$(element).text()}\n`)
+  })
+  $("h1, h2, h3, h4, h5, h6, blockquote").each((_i, element) => {
     $(element).replaceWith(`${$(element).text()}\n\n`)
   })
 
