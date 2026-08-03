@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
+import { describeSplit } from "@shared/send-budget.ts"
 import { cn } from "@/lib/utils"
 import type { SenderAccount, SequenceSettings, Weekday } from "@/lib/types"
 
@@ -28,7 +29,7 @@ interface SettingsPageProps {
   senders: SenderAccount[]
   settings: SequenceSettings
   onSettingsChange: (patch: Partial<SequenceSettings>) => void
-  /** Opens the daily-send-limit dialog for this account. */
+  /** Opens the daily send budget dialog (cap + follow-up share) for this account. */
   onEditSender: (sender: SenderAccount) => void
   /** Disconnects the account from sending. Doesn't touch the user's profile. */
   onRemoveSender: (sender: SenderAccount) => void
@@ -111,17 +112,27 @@ function DayPicker({
       <div className="-mx-1 flex flex-nowrap gap-2 overflow-x-auto px-1 py-1">
         {WEEKDAYS.map((day) => {
           const active = selected.includes(day.value)
+          /*
+           * The last enabled day is locked on. Nothing can be scheduled against an
+           * empty list — every date function throws rather than guessing — so
+           * allowing it would let one checkbox silently stop all sending. Shown as
+           * disabled rather than rejected on click, because a checkbox that ignores
+           * you reads as a broken checkbox.
+           */
+          const isLastEnabled = active && selected.length === 1
           return (
             <label
               key={day.value}
+              title={isLastEnabled ? "At least one day has to stay enabled." : undefined}
               className={cn(
-                "flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm whitespace-nowrap transition-colors",
+                "flex shrink-0 items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm whitespace-nowrap transition-colors",
+                isLastEnabled ? "cursor-not-allowed" : "cursor-pointer",
                 !active && "hover:border-muted-foreground/30"
               )}
             >
               <Checkbox
                 checked={active}
-                disabled={disabled}
+                disabled={disabled || isLastEnabled}
                 onCheckedChange={() => onToggle(day.value)}
               />
               {day.label}
@@ -173,13 +184,27 @@ export function SettingsPage({
   onBack,
   backLabel,
 }: SettingsPageProps) {
-  /** Add/remove a day in whichever of the two day lists was clicked. */
+  /**
+   * Add/remove a day in whichever of the two day lists was clicked.
+   *
+   * The last remaining day cannot be removed. An empty list has no meaning the
+   * scheduler can act on — "never send" is what pausing a lead is for — and it used
+   * to be actively destructive: every scheduling function raises `NoAllowedDayError`
+   * rather than inventing a day, so clearing one list stalled the whole send queue
+   * from a single checkbox, with no error anywhere the user could see it. The
+   * checkbox is also rendered disabled at that point, so this is the second line of
+   * defence rather than the explanation.
+   */
   function toggleDay(key: "outreachDays" | "followUpDays", day: Weekday) {
     const current = settings[key]
-    const next = current.includes(day)
-      ? current.filter((d) => d !== day)
-      : [...current, day].sort((a, b) => a - b)
-    onSettingsChange({ [key]: next })
+
+    if (current.includes(day)) {
+      if (current.length === 1) return
+      onSettingsChange({ [key]: current.filter((d) => d !== day) })
+      return
+    }
+
+    onSettingsChange({ [key]: [...current, day].sort((a, b) => a - b) })
   }
 
   return (
@@ -216,14 +241,14 @@ export function SettingsPage({
       <section>
         <SectionHeading
           title="Sender account"
-          description="The Gmail account every email is sent from, and how many it may send per day."
+          description="The Gmail account every email is sent from, how many it may send per day, and how that day is split between follow-ups and new outreach."
         />
         <div className="overflow-hidden rounded-xl border bg-card">
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/60 hover:bg-muted/60">
                 <TableHead>Email account</TableHead>
-                <TableHead>Send limit</TableHead>
+                <TableHead>Send budget</TableHead>
                 <TableHead className="w-24 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -255,14 +280,23 @@ export function SettingsPage({
                       )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {s.dailyLimit}/day
+                      <p>{s.dailyLimit}/day</p>
+                      {/*
+                        The split is shown, not just the total, because it decides
+                        *which* emails go out on a day the cap is hit — a fact that
+                        would otherwise only be discoverable by opening the dialog
+                        or by noticing which recipients were postponed.
+                      */}
+                      <p className="text-xs">
+                        {describeSplit(s.dailyLimit, s.followUpSharePct)}
+                      </p>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center justify-end gap-1">
                         <Button
                           variant="outline"
                           size="icon-sm"
-                          aria-label="Edit send limit"
+                          aria-label="Edit send budget"
                           onClick={() => onEditSender(s)}
                         >
                           <Pencil />

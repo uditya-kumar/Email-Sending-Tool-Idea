@@ -133,10 +133,19 @@ export function isValidIST(hhmm: string): boolean {
  *
  * Returning `null` rather than throwing keeps the caller honest: a malformed
  * `send_time_ist` in the database must fail that one lead's send, not the tick.
+ *
+ * Uses `isValidIST` rather than Luxon alone, so this and every form validator agree
+ * on what a time is. On Luxon's own terms `"24:00"` parses — it rolls over to 00:00
+ * the next day — so this used to hand the scheduler midnight for it and move the
+ * send 23h30m from where the value read. Unreachable in practice (the column CHECK
+ * and every entry point reject it first), but "the one function that decides when an
+ * email goes out silently reinterprets its input" is not a property worth keeping on
+ * the strength of validation happening elsewhere.
  */
 export function parseISTTime(hhmm: string): { hour: number; minute: number } | null {
+  if (!isValidIST(hhmm)) return null
+
   const dt = DateTime.fromFormat(hhmm, IST_TIME_FORMAT, { zone: IST_ZONE })
-  if (!dt.isValid) return null
   return { hour: dt.hour, minute: dt.minute }
 }
 

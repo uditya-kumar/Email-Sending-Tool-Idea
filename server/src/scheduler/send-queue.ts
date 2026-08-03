@@ -41,23 +41,45 @@ export class SendQueue {
    * … FOR UPDATE SKIP LOCKED) RETURNING *` cannot be expressed in supabase-js,
    * and that statement is the entire guarantee against double-sending: two
    * overlapping ticks, or a restart mid-loop, can never claim the same row.
+   *
+   * `isFollowUp` narrows the claim to one class of email so each can be given its
+   * own share of the daily cap — see `runForAccount`. Omitted means either class,
+   * oldest first.
    */
-  async claimDue(accountId: string, limit: number): Promise<SendRow[]> {
+  async claimDue(accountId: string, limit: number, isFollowUp?: boolean): Promise<SendRow[]> {
     if (limit <= 0) return []
 
     const claimed = await unwrap(
       "claim due sends",
-      db.rpc("claim_due_sends", { p_account_id: accountId, p_limit: limit })
+      db.rpc("claim_due_sends", {
+        p_account_id: accountId,
+        p_limit: limit,
+        // Key omitted rather than sent as null when either class will do: the
+        // parameter defaults to null in SQL and means the same thing, and the
+        // generated Args type declares it optional — not nullable — so an explicit
+        // null is a type error under `exactOptionalPropertyTypes`.
+        ...(isFollowUp === undefined ? {} : { p_is_follow_up: isFollowUp }),
+      })
     )
 
     return claimed ?? []
   }
 
-  /** How many emails this account has sent today, in IST rather than UTC. */
-  async sentToday(accountId: string): Promise<number> {
+  /**
+   * How many emails this account has sent today, in IST rather than UTC.
+   *
+   * `isFollowUp` counts one class only, which is what the split needs: a class's
+   * allowance is a fraction of the whole day, so how much of it remains depends on
+   * how many of *that class* have already gone out. Omitted counts both.
+   */
+  async sentToday(accountId: string, isFollowUp?: boolean): Promise<number> {
     const count = await unwrap(
       "count sends today",
-      db.rpc("sent_today_count", { p_account_id: accountId })
+      db.rpc("sent_today_count", {
+        p_account_id: accountId,
+        // Omitted, not null — see `claimDue`.
+        ...(isFollowUp === undefined ? {} : { p_is_follow_up: isFollowUp }),
+      })
     )
 
     return count ?? 0
@@ -70,6 +92,12 @@ export class SendQueue {
    * the thread id for `threadId` on the next follow-up, and the RFC Message-ID
    * for `In-Reply-To`/`References`. Threading needs the last two *and* a matching
    * subject, so dropping any of them silently detaches the follow-up.
+   *
+   * The Message-ID is the one that may legitimately be missing: reading it is an
+   * extra Gmail call made *after* delivery, so the mailer downgrades a failure there
+   * to `undefined` rather than throwing and having the email re-sent. Written as an
+   * explicit `null` — the column is nullable, and under `exactOptionalPropertyTypes`
+   * an `undefined` is not a value PostgREST will accept.
    */
   async markSent(
     sendId: string,
@@ -81,7 +109,7 @@ export class SendQueue {
       sent_at: new Date().toISOString(),
       gmail_message_id: result.gmailMessageId,
       gmail_thread_id: result.threadId,
-      rfc822_message_id: result.rfcMessageId,
+      rfc822_message_id: result.rfcMessageId ?? null,
       // The audit trail: exactly what went out, which is also what proves the
       // preview and the delivered email agree.
       subject_rendered: rendered.subject,
@@ -155,12 +183,27 @@ export class SendQueue {
    *
    * Used by the weekday gate and the stale-send grace window: neither is a
    * failure, so neither should consume a retry or record a `last_error`.
+   *
+   * `attempt_count` is reset rather than left alone, which is what actually makes
+   * that true. `claim_due_sends` increments it on every claim, and a rescheduled row
+   * *was* claimed — so without this each postponement permanently spent one of the
+   * five attempts a real failure gets. A row bounced across a few weekends reached
+   * `MAX_ATTEMPTS` on its own, and the next transient Gmail error failed it outright
+   * with no retry. Exactly backwards: the emails that had waited longest were the
+   * ones given the least tolerance.
+   *
+   * Safe because it is not a failure counter but a *consecutive*-failure counter:
+   * every path that reads it (`markFailed`'s backoff, `MAX_ATTEMPTS`) is asking "how
+   * many times has this failed in a row", and a successful postponement breaks the
+   * run. Retries of a genuinely failing send still count up, because `markFailed`
+   * writes the delay itself and never comes through here.
    */
   async reschedule(sendId: string, at: Date, reason: string): Promise<void> {
     await this.update(sendId, "reschedule send", {
       status: "pending",
       scheduled_at: at.toISOString(),
       claimed_at: null,
+      attempt_count: 0,
     })
 
     log.info({ sendId, at: at.toISOString(), reason }, "Send rescheduled")

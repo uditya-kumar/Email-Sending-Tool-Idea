@@ -213,6 +213,7 @@ export function senderFromRow(row: GmailAccountPublicRow): SenderAccount | null 
     email: row.email,
     name: row.display_name ?? row.email,
     dailyLimit: row.daily_limit ?? 15,
+    followUpSharePct: row.follow_up_share_pct ?? 50,
     status: row.status ?? "active",
   }
 }

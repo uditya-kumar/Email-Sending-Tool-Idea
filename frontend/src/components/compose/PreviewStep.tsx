@@ -1,11 +1,11 @@
-import { Clock, Loader2, Mail, Paperclip, Rocket } from "lucide-react"
+import { Clock, Loader2, Mail, Paperclip, Rocket, TriangleAlert } from "lucide-react"
 import { formatAttachmentSize } from "@shared/attachments.ts"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { fullName } from "@/lib/leads"
-import { renderTags } from "@/lib/merge-tags"
+import { renderTags, unresolvedTagLabels } from "@/lib/merge-tags"
 import { formatIST } from "@/lib/time"
 import { LeadStatusBadge } from "@/components/common/StatusBadge"
 import type { Lead, SequenceStep } from "@/lib/types"
@@ -196,6 +196,17 @@ function RenderedEmail({ step, lead }: { step: SequenceStep; lead: Lead }) {
   const bodyHtml = step.bodyHtml ? renderTags(step.bodyHtml, lead, { html: true }) : ""
   const isEmpty = !step.subject && !step.bodyHtml
 
+  /*
+   * Tags this lead has no value and no fallback for. They render as their own label
+   * — "Hi First name," — which is grammatical enough to slip past a skim of the
+   * preview, and unmistakable as a broken mail-merge once it is in someone's inbox.
+   * Subject and body together, because the subject is the half that gets read.
+   */
+  const unresolved = unresolvedTagLabels(
+    `${step.subject ?? ""} ${step.bodyHtml ?? ""}`,
+    lead
+  )
+
   return (
     <div
       className={cn(
@@ -236,6 +247,26 @@ function RenderedEmail({ step, lead }: { step: SequenceStep; lead: Lead }) {
           dangerouslySetInnerHTML={{ __html: bodyHtml }}
         />
       )}
+      {/*
+        The one warning on this screen, for the same reason the attachment list is
+        here: Launch is irreversible and this is the last look. Named rather than
+        counted ("First name, Company") so the fix is obvious — fill the cell in on
+        the Database tab, or give the tag a fallback like {{first_name:"there"}}.
+      */}
+      {!isEmpty && unresolved.length > 0 && (
+        <div className="flex items-start gap-2 border-t bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            <span className="font-medium">
+              {unresolved.join(", ")}{" "}
+              {unresolved.length === 1 ? "is" : "are"} blank for this lead
+            </span>{" "}
+            — the tag will send as its own label ("Hi First name,"). Fill it in, or
+            give the tag a fallback.
+          </span>
+        </div>
+      )}
+
       {/*
         Shown on the preview because this is the last screen before Launch, and an
         attachment is part of what goes out — a resume silently missing (or silently

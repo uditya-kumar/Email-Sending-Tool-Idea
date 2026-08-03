@@ -115,6 +115,7 @@ accountsRouter.get(
         email: account.email,
         name: account.display_name ?? account.email,
         dailyLimit: account.daily_limit,
+        followUpSharePct: account.follow_up_share_pct,
         status: account.status,
       })),
     }

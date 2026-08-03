@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer"
 import { google, type gmail_v1 } from "googleapis"
 import type { OAuth2Client } from "google-auth-library"
+import { loggerFor } from "../logger.ts"
 
 /**
  * Everything Gmail-specific lives behind this class, so the scheduler reads as
@@ -68,8 +69,17 @@ export interface SendEmailResult {
    * value Nodemailer reports is discarded and must never be persisted — a
    * follow-up referencing it would be shown as a detached message by any client
    * that threads on headers rather than Gmail's threadId.
+   *
+   * **Optional, because reading it is a second API call made after the message has
+   * already been delivered.** It used to be required, and a transient 503 on that
+   * read threw `GmailRateLimitError` out of `send()` — indistinguishable from the
+   * message never having gone out. The tick called `markFailed`, the row went back
+   * to `pending`, and the recipient got the same email again on the next attempt.
+   * Absent means threading falls back to `threadId` alone, which Gmail's own client
+   * honours; a slightly-worse-threaded follow-up is a far better outcome than a
+   * duplicate.
    */
-  rfcMessageId: string
+  rfcMessageId?: string
 }
 
 /** The connected account needs to be re-authorized before it can send again. */
@@ -93,6 +103,8 @@ export class GmailMessageError extends Error {
  * never reaches it.
  */
 const MAX_RAW_LENGTH = 5_000_000
+
+const log = loggerFor("gmail-mailer")
 
 export class GmailMailer {
   private readonly gmail: gmail_v1.Gmail
@@ -150,10 +162,39 @@ export class GmailMailer {
       )
     }
 
+    /*
+     * Past this point the email has been delivered, so nothing may throw. Reading
+     * the Message-ID back is a *second* API call, and `send()` throwing after a
+     * successful delivery is a lie the scheduler acts on: `markFailed` puts the row
+     * back to `pending` and the next tick sends the same email again. A transient
+     * 503 on this read used to do exactly that.
+     */
+    const rfcMessageId = await this.readMessageIdOrNull(gmailMessageId)
+
     return {
       gmailMessageId,
       threadId,
-      rfcMessageId: await this.readMessageId(gmailMessageId),
+      ...(rfcMessageId ? { rfcMessageId } : {}),
+    }
+  }
+
+  /**
+   * `readMessageId`, downgraded to a `null` on any failure.
+   *
+   * Worth having as its own method so the reason is stated once: everything from
+   * here is best-effort, because the message is already in the recipient's inbox.
+   * Losing the header costs header-based threading on the next follow-up (Gmail
+   * still threads on `threadId`); throwing costs the recipient a duplicate email.
+   */
+  private async readMessageIdOrNull(gmailMessageId: string): Promise<string | null> {
+    try {
+      return await this.readMessageId(gmailMessageId)
+    } catch (error) {
+      log.warn(
+        { err: error, gmailMessageId },
+        "Message was sent but its Message-ID could not be read back; follow-ups will thread on threadId alone"
+      )
+      return null
     }
   }
 

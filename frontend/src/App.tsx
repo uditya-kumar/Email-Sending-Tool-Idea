@@ -1,5 +1,6 @@
 import { Loader2 } from "lucide-react"
 import { useEffect, useState } from "react"
+import { describeSplit } from "@shared/send-budget.ts"
 import { Toaster } from "@/components/ui/sonner"
 import { toast } from "sonner"
 import { LoginPage } from "@/components/auth/LoginPage"
@@ -11,7 +12,7 @@ import { SettingsPage } from "@/components/settings/SettingsPage"
 import { SenderLimitDialog } from "@/components/settings/SenderLimitDialog"
 import { ProfileDialog } from "@/components/settings/ProfileDialog"
 import { useAuth, signOut } from "@/lib/auth"
-import { setDailyLimit, useSenders } from "@/lib/accounts"
+import { setSendBudget, useSenders } from "@/lib/accounts"
 import {
   ApiError,
   cancelLead,
@@ -360,22 +361,22 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
   }
 
   /**
-   * The daily cap, written through the `set_daily_limit` function — the browser
-   * has no UPDATE privilege on `gmail_accounts`, and this is the only field of it
-   * the UI may change.
+   * The daily cap and the follow-up share, written through the `set_send_budget`
+   * function — the browser has no UPDATE privilege on `gmail_accounts`, and these
+   * are the only fields of it the UI may change.
    */
-  async function saveDailyLimit(dailyLimit: number) {
+  async function saveSendBudget(dailyLimit: number, followUpSharePct: number) {
     if (!editingSenderId) return
 
-    const message = await setDailyLimit(editingSenderId, dailyLimit)
+    const message = await setSendBudget(editingSenderId, dailyLimit, followUpSharePct)
 
     if (message) {
-      toast.error("Couldn't change the send limit", { description: message })
+      toast.error("Couldn't change the send budget", { description: message })
       return
     }
 
     await refreshSenders()
-    toast.success(`Send limit set to ${dailyLimit}/day`)
+    toast.success(`${dailyLimit}/day · ${describeSplit(dailyLimit, followUpSharePct)}`)
   }
 
   /**
@@ -491,7 +492,7 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
       <SenderLimitDialog
         sender={editingSender}
         onOpenChange={(open) => !open && setEditingSenderId(null)}
-        onSave={(dailyLimit) => void saveDailyLimit(dailyLimit)}
+        onSave={(dailyLimit, sharePct) => void saveSendBudget(dailyLimit, sharePct)}
       />
 
       <ProfileDialog

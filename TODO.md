@@ -485,7 +485,7 @@ every optional field needs conditional-spread form. Know this before Phase 5.
       *consumes* it, and StrictMode double-invokes effects.
 - [x] Read real accounts from the `gmail_accounts_public` **view** (`lib/accounts.ts`), never the
       `gmail_accounts` table — that holds `refresh_token_enc` and has no RLS policy at all. The daily
-      cap goes through the `set_daily_limit` function since the browser has no UPDATE on it.
+      cap goes through the `set_send_budget` function since the browser has no UPDATE on it.
 - [x] Wire disconnect → `POST /api/accounts/:id/disconnect`
 - [x] Render `status='needs_reauth'` as a Reconnect prompt — otherwise a revoked token stays
       invisible until a scheduled send fails hours later
@@ -998,6 +998,240 @@ or less, the date in below cards should change immediately, it should sync behin
 
 ---
 
+## Phase 13 — Follow-up / outreach split of the daily cap ✅
+
+The cap alone doesn't say *which* emails go out on a day it's hit. `claim_due_sends` was FIFO on
+`scheduled_at` across both classes, so with 20 follow-ups and 10 new leads due against a cap of 10
+the outcome was decided by whose `send_time_ist` happened to be earliest — and a growing follow-up
+backlog could starve new outreach for days, or the reverse.
+
+- [x] `gmail_accounts.follow_up_share_pct` (0–100, default 50). A **percentage**, not a count, so
+      warming up 10 → 15/day keeps the balance the user chose instead of handing every new slot to
+      one class. Stated twice in schema.sql — inside `create table if not exists` and again as
+      `alter table … add column if not exists` — so the file still runs against a live database.
+- [x] `set_daily_limit` → **`set_send_budget(uuid, int, int)`**, writing cap and share together:
+      two RPCs would let a failure between them pair a cap the user never chose with a share they did.
+      The old function is dropped, not left in place, precisely because it can still half-apply.
+- [x] `claim_due_sends` and `sent_today_count` take `p_is_follow_up boolean default null`. Both need
+      an explicit `drop function` for the old arity — Postgres treats a new default as a *different*
+      function, so a 2-arg PostgREST call would silently resolve to the old one and undo the split.
+- [x] `shared/send-budget.ts` — `splitBudget` (flooring follow-ups so the two always sum to the cap),
+      `sharePctFor` (the inverse, by search: `round(n/total*100)` is *not* an inverse of a flooring
+      split), `describeSplit` for the card. Shared because the tick divides the real budget and the
+      card must state the same division.
+- [x] `claimWithinShares` in `tick.ts` — three claims: follow-ups within their share, outreach with
+      what's left, then follow-ups again for anything unused. Borrowing falls out for free because
+      each claim's ceiling is the previous claim's *result*; counting first would race an overlapping
+      tick. The share is subtracted against `sentToday(id, true)`, not per-tick, or a 6/4 split would
+      send 6 in the morning and offer 6 more in the afternoon. Batch re-sorted by `scheduled_at` —
+      concatenating would put a 16:00 follow-up ahead of a 09:00 first contact.
+- [x] Settings card shows the split (`10/day` · `6 follow-ups · 4 new`); the dialog edits **counts**
+      and converts, since nobody reasons about outreach in percentages. Editing the cap rescales the
+      count from a held `sharePct` — re-deriving it per keystroke loses the ratio, because retyping
+      10 → 15 passes through "1" where 60% floors to 0.
+- [x] **Bug fixed alongside:** `reschedule` now resets `attempt_count`. `claim_due_sends` increments
+      on every claim, so each weekday-gate or stale-grace postponement permanently spent one of the
+      five attempts — a row bounced across a few weekends hit `MAX_ATTEMPTS` on its own and the next
+      transient Gmail error failed it outright. Safe because every reader (`markFailed`'s backoff,
+      `MAX_ATTEMPTS`) asks about *consecutive* failures, and `markFailed` never comes through here.
+- [x] **Verified:** migration `follow_up_outreach_send_split` applied; `pg_proc` shows only the new
+      signatures. `sent_today_count` discriminates by class (1 total = 0 follow-ups + 1 outreach).
+      `sharePctFor`/`splitBudget` round-trip exactly for every count at every cap ≤ 100. In the
+      browser: 15/day → 10 rescaled 7 → 5 at 50%; reserving 6 gave `6 follow-ups · 4 new`; raising
+      back to 15 gave 9/6 (not 6/9); Save wrote `daily_limit 10, follow_up_share_pct 60` and the card
+      re-read it. Both packages typecheck; lint clean on every changed file.
+- [ ] **Not yet exercised against a real capped day** — no account has had 10+ due sends of both
+      classes at once. The claim logic is verified by construction and by the RPC's class filter, not
+      by a live overflow.
+
+## Phase 14 — Pre-outreach bug hunt ✅
+
+A deliberate pass over the send path before any real outreach, asked for as "battle tested". Seven
+bugs, found by reading and then reproduced in Node rather than the reverse. Four of them delivered
+**duplicate or zero** email, which is why they are grouped here rather than filed individually.
+
+### The theme: what happens *after* the email leaves
+
+Four separate bugs were the same mistake in four places — code that runs **after** Gmail has
+accepted a message was allowed to report failure, and the scheduler acts on that report by sending
+again. There is no way to unsend, so the rule now is: past `mailer.send()`, nothing throws.
+
+- [x] **#3 Five copies of one email.** `enqueueNextStep` sat *inside* `processSend`'s try, so a throw
+      after `markSent` went to `handleSendError` → `markFailed` → row back to `pending` → re-claimed
+      and re-delivered, five times, until `MAX_ATTEMPTS`. Reachable from one click: `followUpSendAt`
+      throws `NoAllowedDayError` on an empty `follow_up_days`, which the Settings picker allowed.
+      Fixed by moving it outside the try and swallowing its failure — a stalled sequence is
+      recoverable (the enqueue is idempotent), a duplicate is not.
+- [x] **#4 One bad row stopped the whole queue, silently.** The weekday gate and the stale-send grace
+      window call `rescheduleStaleAt` *outside* any try, and it throws on an empty day list or a
+      malformed `send_time_ist`. That escaped `runForAccount` → `runTick` → the cron `.catch()`,
+      abandoning the rest of the batch and every later account, leaving the row in `sending` until
+      `releaseStaleClaims` freed it 15 minutes later — then repeating. Nothing sent, ever, behind one
+      log line a minute. Fixed with `processSendSafely` (fail that row, continue the batch) plus a
+      per-account try in `runTick`.
+- [x] **#5 A delivered email reported as failed.** `send()` reads the RFC Message-ID back in a
+      *second* API call after delivery; a transient 503 there threw `GmailRateLimitError`, which the
+      tick cannot distinguish from "never sent" → resend. `rfcMessageId` is now optional and the read
+      is best-effort: losing it costs header-based threading (Gmail still threads on `threadId`),
+      throwing cost the recipient a duplicate.
+- [x] **#7 A dropped database write sent five copies.** `markSent` was inside the same try as
+      `mailer.send`, so one failed Supabase statement was indistinguishable from the email never
+      going out: row back to `pending`, re-claimed, re-delivered — five times. The most *ordinary* of
+      the four, needing nothing exotic: one PostgREST call over the network, from a 1 GB EC2 box, in
+      a loop that runs every minute. Reproduced in Node before the fix (`deliveries: 5`) and after
+      (`deliveries: 1`). Fixed by ending the try at `mailer.send` and recording in a separate step
+      whose failure path is `markPermanentlyFailed`.
+
+      **The row is marked `failed` even though the email was delivered.** That is deliberate, not an
+      oversight: `failed` is the only status that stops a retry, and a retry costs the recipient a
+      duplicate. So the choice is a row that contradicts reality vs. a prospect who gets the same
+      cold email five times — and only the first is recoverable. `last_error` carries the truth,
+      including the Gmail `threadId`, so the send can be reconciled by hand. If *that* write also
+      fails the row is left in `sending`; `releaseStaleClaims` will free it after 15 minutes and it
+      may go out twice. Accepted: it needs Supabase to be down for two consecutive writes on one row.
+- [x] **#1 Alternate-day dead zone.** `rescheduleStaleAt` added a day unconditionally, skipping the
+      first slot a send could have used. A 20-follow-up backlog against a cap of 10 drained
+      **10, 0, 10, 0** — every second day dead. Now shares `nextFutureSlot` with `firstSendAt`, so
+      "today at 00:01" gets today's 09:30. Verified 10, 10; worst-case postponements 2 → 1.
+- [x] **#2 Merge tags in HTML attribute position.** `toHtmlValue` escaped `& < >` but not quotes, and
+      Tiptap's link dialog produces `<a href="{{website}}">` — so a website of
+      `https://ok.com" onmouseover="alert(1)` broke out of the attribute. Confirmed through the real
+      renderer, fixed with `&quot;`/`&#39;`, then re-confirmed by parsing the output and asserting
+      the anchor has no attribute but `href`. **Not** a click-wrapping regression: the only values
+      that stop being wrapped are ones `isTrackableUrl` rejects on the raw string too.
+- [x] **#6 A whitespace-only cell defeated its own fallback.** `" " || fallback` is `" "`, so
+      `Hi {{first_name:"there"}},` rendered `Hi    ,` on a padded CSV column — the fallback written
+      precisely to cover a missing name was the thing skipped. Now trimmed before the emptiness test.
+
+### Root causes closed, not just symptoms
+
+- [x] **Empty day lists are now impossible.** The picker locks the last enabled day (disabled
+      checkbox + a guard in `toggleDay`), and `settings.outreach_days` / `follow_up_days` gained
+      CHECK constraints. Migration `settings_days_non_empty_use_cardinality`.
+- [x] **`cardinality`, not `array_length`.** The first version of that constraint used
+      `array_length(x, 1) >= 1`, which is **NULL** on an empty array — and a CHECK passes on NULL, so
+      it let through the exact write it existed to block. Caught because the verification step tried
+      the bad write instead of assuming; the test write left the live row empty and it was restored
+      in the same migration.
+- [x] **The label fallback is now warned about, not changed.** A blank value with no author fallback
+      resolves to the attribute *label*: `"Hi {{first_name}},"` → **"Hi First name,"**. Left as-is
+      (`Hi ,` is not better, and a silent gap hides it) but the Preview step — the last screen before
+      Launch — now names the blank attributes via `unresolvedTagLabels`.
+
+### Verification
+
+- [x] `server/npm test` — 6 regression tests, the first the repo has. Three drive the **real**
+      `runTick` with every collaborator module-mocked, because those bugs were control flow (which try
+      block catches what) and no unit test would have seen them. **Each was confirmed to fail against
+      its pre-fix code** — `git stash push server/src/scheduler/tick.ts` turns all three red — which
+      is the only thing that makes them worth keeping.
+- [x] Both packages typecheck; lint clean on every changed file. `exactOptionalPropertyTypes` caught
+      the `rfc822_message_id` nullability at the boundary, as designed.
+- [x] Constraint verified by attempting the empty write on the live database (rejected) and a normal
+      day edit (accepted). Live settings row unchanged: all seven days, as testing requires.
+- [x] **Both UI changes browser-verified** (Vite alone — the Express server is what sends, so it was
+      left down). Settings: unchecking six outreach days leaves Monday `disabled` with
+      `title="At least one day has to stay enabled."`, and Save was never clicked, so the live row is
+      untouched. Preview: a throwaway lead with `first_name = "   "` and an empty company rendered the
+      amber banner "First name, Company are blank for this lead" — which also confirms **#6** end to
+      end, since the whitespace-only cell is what made it count as blank. Probe lead deleted; the
+      database is back to one lead, three steps, two sends.
+- [ ] `istTimeToUtcIso` in `shared/time.ts` is **dead code** — no call sites. Delete it, or the
+      "Reuse, don't rewrite" list below keeps advertising it.
+
+## Phase 15 — Core audit: scheduling, sending, reply detection ✅
+
+A second pass over the same code, asked for as "this is the core feature and this is not the place of
+having bugs — prospects should receive the appropriate email on time, no duplicate emails to the same
+email". Phase 14 found bugs by reading; this one **wrote the tests first** and let them find things.
+**6 tests → 94.** Four more defects, all four in the "when does this go out" half rather than the
+"did it go out" half Phase 14 covered.
+
+### The suites
+
+| File | Tests | What it pins down |
+|---|---|---|
+| `test/schedule.test.ts` | 34 | The timing arithmetic. Property tests over all 1440 minutes × 7 days, a fortnight × waits 0–7, and 366 days of DST. |
+| `test/send-loop.test.ts` | 36 | The real `runTick` against a faithful in-memory `sends` table, over simulated days. |
+| `test/projection.test.ts` | 9 | The compose rail's dates against what the loop will actually do. |
+| `test/budget.test.ts` | 9 | The cap and its split, exhaustively over 101 × 101 cap/percentage pairs. |
+| `test/tick.test.ts` | 3 | Phase 14's three duplicate-send regressions. |
+| `test/gmail-mailer.test.ts` | 3 | Carried over. |
+
+`send-loop.test.ts` is the important one. Its queue mock is written from `schema.sql` rather than
+stubbed per test — `claimDue` filters and orders exactly as `claim_due_sends` does and increments
+`attempt_count`; `markFailed` resets to `pending` until `MAX_ATTEMPTS`; `enqueue` is idempotent on
+`(lead_id, step_position)`; `cancelPendingFor` deletes rather than marks — because those are the
+semantics the duplicate bugs turned on, and a looser stub would assert nothing. **Every test in it
+asserts no-duplicates**, whatever else it is about, including the three-week 30-lead campaign.
+
+### The four defects
+
+- [x] **#8 The rail promised a schedule the queue would not honour.** `followUpSendAt` floored its
+      slot against `now` only, never against the parent send. That is always right on the server
+      (`enqueueNextStep` passes the real send time, so `sentAt` ≈ `now`) and wrong in the browser,
+      which chains projections *forward* from emails that haven't gone out yet. With a 0-day wait
+      (`wait_days >= 0` — the UI allows it) the compose rail drew the opening email and its follow-up
+      **at the same minute on the same day**, while the scheduler would have sent them a day apart.
+      Reproduced in Chrome against the real Vite bundle: `Mon 3 Aug, 09:30` twice before, `Mon 3 Aug`
+      → `Tue 4 Aug` after. Fixed by flooring against `max(now, sentAt)`, which leaves every
+      server-side answer untouched. This is the worst kind of scheduling bug — not a wrong send, but
+      the last screen before Launch lying about what will happen.
+- [x] **#9 A throttled account left the rest of its batch claimed.** On a 429 the loop stops, which
+      is right — but the rows behind it had already been flipped `pending` → `sending` by
+      `claimWithinShares`, and nothing released them: `markFailed` only ever sees the row that
+      failed. (The old comment claimed otherwise.) A claimed row matches no claim filter, so they sat
+      invisible until `releaseStaleClaims` freed them 15 minutes later — a queue that looks busy and
+      is doing nothing, and leads stuck on "sending" for the same 15 minutes. Fixed with
+      `releaseUnclaimed`, which hands each row back to its own `scheduled_at` and undoes the claim's
+      `attempt_count` increment, so an untried row isn't charged for the account being throttled.
+- [x] **#10 `parseISTTime` accepted `"24:00"`.** Luxon parses it by rolling over to next-day 00:00, so
+      the one function that decides when an email goes out silently moved the send **23h30m** from
+      where the value read. Unreachable today (`leads_send_time_ist_check` and every entry point
+      reject it first), fixed anyway by delegating to `isValidIST` — validation happening elsewhere is
+      not a reason for this function to reinterpret its input.
+- [x] **#11 The budget clamps didn't clamp.** `splitBudget` used
+      `Math.min(Math.max(Math.trunc(n), lo), hi)`, and `Math.max(NaN, 0)` is **NaN** — so every field
+      came back NaN. Traced end to end: NaN survives `limit <= 0`, `JSON.stringify` makes it `null`,
+      `greatest(null::int, 0)` is 0 in Postgres, so `claim_due_sends` claims **zero** rows. It fails
+      safe but *silently*, and a queue quietly sending nothing looks exactly like a queue with
+      nothing to send. Now clamps to `min`. Reachable from the Settings dialog mid-edit, not from the
+      database (both columns are `int` with CHECKs).
+
+### Also fixed: the test suite was killing itself
+
+- [x] **Tests took 3m20s and were reported as failed with every assertion passing.** The real logger
+      spawns a **pino-pretty worker thread** outside production, and `.env` sets `LOG_LEVEL=debug`, so
+      `send-loop.test.ts` wrote tens of thousands of formatted lines and then outlived the runner,
+      which killed it (`exitCode: 143`). Both tick suites now mock `../src/logger.ts`. **3m20s → 5.6s
+      for all 94.**
+
+### What was checked and found correct
+
+Worth recording, because "no bug here" is the point of an audit: the daily cap holds across many
+ticks in a day and across the IST-day boundary; `claimWithinShares` borrows in both directions and
+interleaves by `scheduled_at`; a reply cancels pending follow-ups **before** the next send, including
+one arriving between the claim and the send; another account's thread is skipped; a watcher error is
+per-lead but `GmailAuthError` aborts the account without leaving rows claimed; a crash mid-send
+recovers exactly once while a row claimed seconds ago is left alone; overlapping ticks send each lead
+once; postponements never exhaust the retry budget; blank follow-ups inherit the parent subject and
+thread onto it. Duplicate *leads* are blocked twice over — `leads_email_key` on
+`(user_id, lower(email))`, verified live, plus a pre-filter in `importLeads` so one collision doesn't
+reject the whole CSV.
+
+### Verification
+
+- [x] `npm test` — **94 tests, 94 pass, 5.6s.** Both new fixes confirmed to fail against pre-fix
+      code (#9 by `git stash`, #8 by reverting the one line), which is the only thing that makes them
+      worth keeping.
+- [x] Both packages typecheck after the `shared/` edits. The pre-existing `baseUrl` TS5101 notice in
+      `frontend/tsconfig.json` is untouched — out of scope.
+- [x] **#8 browser-verified** against the real bundle (Vite alone; Express boots the scheduler and
+      sends real email, so it stayed down). The live prospect's rail reads "Sent today, 1:50 AM" and
+      "Sends tomorrow, 7:30 AM", matching its `sends` rows exactly. Nothing was edited — the two rows
+      were re-queried afterwards and are unchanged.
+- [x] Scratch probes deleted.
+
 ## `server/.env.example`
 
 ```
@@ -1024,8 +1258,10 @@ Frontend only ever gets `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `V
 
 ## Reuse, don't rewrite
 
-`shared/merge-tags.ts` (`renderTags`, `tagRegex`, fallback + HTML-escape logic — already correct;
-the server imports it rather than reimplementing), `shared/sequence.ts` (`appendFollowUp`,
-`duplicateEmailStep`, `removeEmailStep`, `setDelayDays`, `patchStep`, `describeSequence`),
-`shared/time.ts` (`istTimeToUtcIso`, `formatIST`, `isValidIST`), `shared/leads.ts` (`fullName`),
-`frontend/src/lib/csv.ts`.
+`shared/merge-tags.ts` (`renderTags`, `tagRegex`, `unresolvedTagLabels`, fallback + HTML-escape logic
+— the server imports it rather than reimplementing, so a fix lands in the preview and the delivered
+email at once; see Phase 14 for the two escaping/fallback bugs that were in it),
+`shared/sequence.ts` (`appendFollowUp`, `duplicateEmailStep`, `removeEmailStep`, `setDelayDays`,
+`patchStep`, `describeSequence`), `shared/time.ts` (`formatIST`, `isValidIST` — `istTimeToUtcIso` is
+dead, don't reach for it), `shared/leads.ts` (`fullName`), `shared/schedule.ts` (`nextFutureSlot`,
+`firstSendAt`, `followUpSendAt` — all scheduling goes through these), `frontend/src/lib/csv.ts`.

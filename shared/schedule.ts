@@ -86,6 +86,23 @@ function slotOn(at: DateTime, sendTimeIst: string): DateTime {
 }
 
 /**
+ * The next `sendTimeIst` slot that is still ahead of `now` — today's if it hasn't
+ * passed, otherwise tomorrow's.
+ *
+ * Shared by `firstSendAt` and `rescheduleStaleAt` because "when is the next real
+ * chance to send this" is one question, and the two answering it differently is
+ * precisely the bug this replaced: a row that missed its slot was pushed a day past
+ * the first slot it could actually have used.
+ */
+function nextFutureSlot(sendTimeIst: string, reference: DateTime): DateTime {
+  const slot = slotOn(reference, sendTimeIst)
+
+  // Strictly in the future: a slot exactly equal to now would be claimable by
+  // the tick already running, which makes the launch response a lie.
+  return slot <= reference ? slot.plus({ days: 1 }) : slot
+}
+
+/**
  * When a freshly launched lead's opening email should go out.
  *
  * "Today at 09:30" when it is 08:00 in India, tomorrow when it is already 10:00,
@@ -98,13 +115,8 @@ export function firstSendAt(
   now: DateTime = DateTime.utc()
 ): Date {
   const reference = now.setZone(IST_ZONE)
-  let slot = slotOn(reference, sendTimeIst)
 
-  // Strictly in the future: a slot exactly equal to now would be claimable by
-  // the tick already running, which makes the launch response a lie.
-  if (slot <= reference) slot = slot.plus({ days: 1 })
-
-  return toDate(nextAllowedDay(slot, outreachDays))
+  return toDate(nextAllowedDay(nextFutureSlot(sendTimeIst, reference), outreachDays))
 }
 
 /**
@@ -121,19 +133,35 @@ export function followUpSendAt(
   followUpDays: readonly Weekday[],
   now: DateTime = DateTime.utc()
 ): Date {
-  const base = DateTime.fromJSDate(sentAt, { zone: IST_ZONE }).plus({
-    days: Math.max(waitDays, 0),
-  })
+  const parentAt = DateTime.fromJSDate(sentAt, { zone: IST_ZONE })
+  const base = parentAt.plus({ days: Math.max(waitDays, 0) })
 
   let slot = slotOn(base, sendTimeIst)
-  const reference = now.setZone(IST_ZONE)
 
   /*
-   * A zero-day wait, or a send that happened after its own slot, would otherwise
-   * put the follow-up in the past and fire it on the very next tick — turning
-   * "wait 0 days" into "send both emails within a minute of each other".
+   * The follow-up has to clear two separate floors, so the guard is against the
+   * later of them.
+   *
+   * `now` is the obvious one: a slot already past would be claimed on the very next
+   * tick, turning "wait 0 days" into two emails inside the same minute.
+   *
+   * `sentAt` is the one that was missing, and it only bites when the parent is in the
+   * **future** — which is exactly the case the compose rail is in. It chains
+   * projections forward, so it asks for a follow-up to an email that hasn't gone out
+   * yet: with a 0-day wait, `slot` came back equal to the parent's own slot, `now` was
+   * hours earlier so the old check didn't fire, and the rail drew both emails at the
+   * same minute on the same day. The scheduler never agreed — `enqueueNextStep` passes
+   * the real send time as both `sentAt` and `now`, so its slot was always in the past
+   * and got pushed to the next day — which is the worse half of the bug: the sidebar
+   * confidently showed a schedule the queue would not honour, on the screen the user
+   * reads before launching.
+   *
+   * Taking the maximum leaves the scheduler's own answers untouched (there `sentAt` is
+   * `now`, and for a late send `now` is later still) and fixes the projection.
    */
-  if (slot <= reference) slot = slotOn(reference.plus({ days: 1 }), sendTimeIst)
+  const floor = DateTime.max(now.setZone(IST_ZONE), parentAt)
+
+  if (slot <= floor) slot = slotOn(floor.plus({ days: 1 }), sendTimeIst)
 
   return toDate(nextAllowedDay(slot, followUpDays))
 }
@@ -207,11 +235,23 @@ export function desiredFollowUpTime(input: {
 }
 
 /**
- * Where to move a send that is too old to deliver now.
+ * Where to move a send that is too old to deliver now, or that has landed on a day
+ * its settings don't allow.
  *
- * The next allowed day at the lead's usual time, never "right now": a laptop
- * closed over the weekend must not deliver Friday's 09:30 email at 02:00 on
- * Monday, which reads as a bot to both the recipient and Gmail.
+ * The next allowed day at the lead's usual time, never "right now": a laptop closed
+ * over the weekend must not deliver Friday's 09:30 email at 02:00 on Monday, which
+ * reads as a bot to both the recipient and Gmail.
+ *
+ * **The next slot, though — not tomorrow's.** This used to add a day unconditionally,
+ * which quietly skipped the first slot the send could actually have used. The trigger
+ * was the ordinary case rather than an exotic one: a row left over from a capped day
+ * is claimed by the first tick after IST midnight, is ~14h late so the grace window
+ * fails it, and got pushed to *the day after* the morning it was sitting there
+ * waiting for. A 20-follow-up backlog against a cap of 10 therefore drained 10, 0,
+ * 10, 0 — every second day silently dead, and every recipient in the tail a day
+ * further behind their own send time than the settings implied. Now the same
+ * before/after-the-slot test `firstSendAt` uses (`nextFutureSlot`), so today at 00:01
+ * still gets today at 09:30.
  */
 export function rescheduleStaleAt(
   sendTimeIst: string,
@@ -219,7 +259,8 @@ export function rescheduleStaleAt(
   now: DateTime = DateTime.utc()
 ): Date {
   const reference = now.setZone(IST_ZONE)
-  return toDate(nextAllowedDay(slotOn(reference.plus({ days: 1 }), sendTimeIst), allowedDays))
+
+  return toDate(nextAllowedDay(nextFutureSlot(sendTimeIst, reference), allowedDays))
 }
 
 /**

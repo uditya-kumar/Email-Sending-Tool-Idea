@@ -104,6 +104,7 @@ export type Database = {
           daily_limit: number
           display_name: string | null
           email: string
+          follow_up_share_pct: number
           google_sub: string
           id: string
           refresh_token_enc: string
@@ -119,6 +120,7 @@ export type Database = {
           daily_limit?: number
           display_name?: string | null
           email: string
+          follow_up_share_pct?: number
           google_sub: string
           id?: string
           refresh_token_enc: string
@@ -134,6 +136,7 @@ export type Database = {
           daily_limit?: number
           display_name?: string | null
           email?: string
+          follow_up_share_pct?: number
           google_sub?: string
           id?: string
           refresh_token_enc?: string
@@ -524,6 +527,7 @@ export type Database = {
           daily_limit: number | null
           display_name: string | null
           email: string | null
+          follow_up_share_pct: number | null
           id: string | null
           status: Database["public"]["Enums"]["account_status"] | null
         }
@@ -532,6 +536,7 @@ export type Database = {
           daily_limit?: number | null
           display_name?: string | null
           email?: string | null
+          follow_up_share_pct?: number | null
           id?: string | null
           status?: Database["public"]["Enums"]["account_status"] | null
         }
@@ -540,6 +545,7 @@ export type Database = {
           daily_limit?: number | null
           display_name?: string | null
           email?: string | null
+          follow_up_share_pct?: number | null
           id?: string | null
           status?: Database["public"]["Enums"]["account_status"] | null
         }
@@ -569,7 +575,11 @@ export type Database = {
     }
     Functions: {
       claim_due_sends: {
-        Args: { p_account_id: string; p_limit: number }
+        Args: {
+          p_account_id: string
+          p_is_follow_up?: boolean
+          p_limit: number
+        }
         Returns: {
           attempt_count: number
           body_html_rendered: string | null
@@ -599,9 +609,16 @@ export type Database = {
           isSetofReturn: true
         }
       }
-      sent_today_count: { Args: { p_account_id: string }; Returns: number }
-      set_daily_limit: {
-        Args: { p_account_id: string; p_limit: number }
+      sent_today_count: {
+        Args: { p_account_id: string; p_is_follow_up?: boolean }
+        Returns: number
+      }
+      set_send_budget: {
+        Args: {
+          p_account_id: string
+          p_follow_up_share: number
+          p_limit: number
+        }
         Returns: undefined
       }
     }

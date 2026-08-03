@@ -97,11 +97,45 @@ create table if not exists public.gmail_accounts (
   scopes                   text[] not null default '{}',
   daily_limit              int  not null default 15
                              check (daily_limit > 0 and daily_limit <= 500),
+
+  -- What share of daily_limit is held back for follow-ups, as a percentage.
+  --
+  -- Without a reserved share the two classes compete on scheduled_at alone, so
+  -- which ones go out is decided by whose send_time_ist happens to be earliest
+  -- that day — and a growing follow-up backlog can starve new outreach for days,
+  -- or the reverse. 60 means "at most 60% of the cap on follow-ups".
+  --
+  -- A *percentage* rather than a count so it survives a change to daily_limit:
+  -- raising the cap 10 → 15 during warm-up keeps the balance the user chose
+  -- instead of quietly handing every new slot to one class.
+  --
+  -- It is only ever a ceiling. `runForAccount` lets either class borrow the
+  -- other's unused slots, so 0 pending follow-ups still means a full day of
+  -- outreach. 0 and 100 are therefore both meaningful: "only follow-ups when
+  -- there's nothing else" and "follow-ups first, always".
+  follow_up_share_pct      int  not null default 50
+                             check (follow_up_share_pct between 0 and 100),
   status                   public.account_status not null default 'active',
 
   created_at               timestamptz not null default now(),
   updated_at               timestamptz not null default now()
 );
+
+-- `create table if not exists` above is a no-op on a database that already has
+-- the table, so a column added after the first deploy needs saying twice. This
+-- is what keeps the file runnable start-to-finish against a live database as
+-- well as an empty one.
+alter table public.gmail_accounts
+  add column if not exists follow_up_share_pct int not null default 50;
+
+do $$
+begin
+  alter table public.gmail_accounts
+    add constraint gmail_accounts_follow_up_share_pct_check
+    check (follow_up_share_pct between 0 and 100);
+exception
+  when duplicate_object then null;   -- already added by the create table above
+end $$;
 
 create unique index if not exists gmail_accounts_email_key
   on public.gmail_accounts (user_id, lower(email));
@@ -349,8 +383,22 @@ create table if not exists public.settings (
   track_clicks           boolean not null default false,
 
   -- 0 = Monday … 6 = Sunday, matching the Weekday type. NOT Luxon's 1-7.
-  outreach_days          int[] not null default '{0,1,2,3}',
-  follow_up_days         int[] not null default '{0,1,2,3,4}',
+  --
+  -- Never empty. Every scheduling function raises `NoAllowedDayError` on an empty
+  -- day list rather than inventing a day, and that throw used to escape the tick
+  -- entirely: one cleared list stalled the whole send queue, silently, until
+  -- somebody read the logs. The Settings picker locks the last enabled day, and this
+  -- is the guarantee behind it — the browser writes this table directly under RLS,
+  -- so the constraint is the only thing a hand-crafted PATCH has to get past.
+  --
+  -- `cardinality`, NOT `array_length(x, 1)`: on an empty array array_length returns
+  -- NULL rather than 0, making the comparison NULL — which a CHECK constraint
+  -- accepts. The first attempt at this used array_length and let the exact write it
+  -- existed to block straight through. cardinality('{}') is 0.
+  outreach_days          int[] not null default '{0,1,2,3}'
+                           check (cardinality(outreach_days) >= 1),
+  follow_up_days         int[] not null default '{0,1,2,3,4}'
+                           check (cardinality(follow_up_days) >= 1),
 
   -- Random gap between consecutive sends, for deliverability.
   jitter_min_seconds     int not null default 45  check (jitter_min_seconds >= 0),
@@ -491,9 +539,14 @@ grant select on public.events to authenticated;
 --  security_invoker) precisely because the base table denies the caller, so it
 --  filters on auth.uid() itself.
 -- ═══════════════════════════════════════════════════════════════════════════
-create or replace view public.gmail_accounts_public
+-- Dropped rather than replaced: `create or replace view` cannot add a column in
+-- the middle of the list, and adding follow_up_share_pct after created_at just to
+-- appease that would put the two budget fields in different places here and in
+-- the table.
+drop view if exists public.gmail_accounts_public;
+create view public.gmail_accounts_public
 with (security_invoker = false) as
-  select id, email, display_name, daily_limit, status, created_at
+  select id, email, display_name, daily_limit, follow_up_share_pct, status, created_at
   from public.gmail_accounts
   where user_id = auth.uid();
 
@@ -566,8 +619,15 @@ with (security_invoker = true) as
 revoke all on public.lead_engagement from anon;
 grant select on public.lead_engagement to authenticated;
 
--- The daily cap is the one gmail_accounts field the UI edits (SenderLimitDialog).
-create or replace function public.set_daily_limit(p_account_id uuid, p_limit int)
+-- The send budget — the only gmail_accounts fields the UI edits
+-- (SenderLimitDialog). Both in one function because they are edited together and
+-- read together by the tick: two RPCs would let a failure between them leave a
+-- cap the user never chose paired with a share they did.
+create or replace function public.set_send_budget(
+  p_account_id       uuid,
+  p_limit            int,
+  p_follow_up_share  int
+)
 returns void
 language plpgsql
 security definer
@@ -578,15 +638,25 @@ begin
     raise exception 'daily_limit must be between 1 and 500';
   end if;
 
+  if p_follow_up_share < 0 or p_follow_up_share > 100 then
+    raise exception 'follow_up_share_pct must be between 0 and 100';
+  end if;
+
   update public.gmail_accounts
-     set daily_limit = p_limit
+     set daily_limit         = p_limit,
+         follow_up_share_pct = p_follow_up_share
    where id = p_account_id
      and user_id = auth.uid();   -- scoped to the caller, not just the id
 end;
 $$;
 
-revoke all on function public.set_daily_limit(uuid, int) from public, anon;
-grant execute on function public.set_daily_limit(uuid, int) to authenticated, service_role;
+revoke all on function public.set_send_budget(uuid, int, int) from public, anon;
+grant execute on function public.set_send_budget(uuid, int, int) to authenticated, service_role;
+
+-- Superseded by set_send_budget. Dropped rather than left in place: it can still
+-- write daily_limit without touching the share, which is exactly the half-applied
+-- state the combined function exists to prevent.
+drop function if exists public.set_daily_limit(uuid, int);
 
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -598,7 +668,18 @@ grant execute on function public.set_daily_limit(uuid, int) to authenticated, se
 -- FOR UPDATE SKIP LOCKED is what makes the loop safe across restarts and
 -- overlapping ticks: two concurrent callers can never claim the same row, so
 -- an email cannot be sent twice. Server-only (secret key).
-create or replace function public.claim_due_sends(p_account_id uuid, p_limit int)
+-- p_is_follow_up restricts the claim to one class of email — follow-ups (true),
+-- opening emails (false), or either (null). That is what lets `runForAccount`
+-- give each class its own share of the daily cap: without it the claim is FIFO on
+-- scheduled_at across both, so which emails go out on a capped day is decided by
+-- whose send_time_ist happens to be earliest, and a backlog on one side starves
+-- the other. Null is kept for a caller that wants the plain oldest-first
+-- behaviour.
+create or replace function public.claim_due_sends(
+  p_account_id   uuid,
+  p_limit        int,
+  p_is_follow_up boolean default null
+)
 returns setof public.sends
 language sql
 security definer
@@ -614,6 +695,7 @@ as $$
       where c.gmail_account_id = p_account_id
         and c.status = 'pending'
         and c.scheduled_at <= now()
+        and (p_is_follow_up is null or c.is_follow_up = p_is_follow_up)
       order by c.scheduled_at
       limit greatest(p_limit, 0)
       for update skip locked
@@ -621,9 +703,26 @@ as $$
   returning s.*;
 $$;
 
+-- The two-argument version, left behind by the signature change above. Postgres
+-- treats a new default as a *different* function rather than a replacement, so
+-- without this drop both exist and `db.rpc("claim_due_sends", …)` with two
+-- arguments resolves to the old one — which ignores p_is_follow_up entirely and
+-- would silently undo the split.
+drop function if exists public.claim_due_sends(uuid, int);
+
 -- How many emails this account has already sent "today" in IST — the daily cap
 -- is a human-facing, IST-day notion, not a UTC-day one.
-create or replace function public.sent_today_count(p_account_id uuid)
+--
+-- p_is_follow_up splits the count the same way it splits the claim, and the tick
+-- needs it that way: a class's share is a fraction of the whole day's cap, so
+-- deciding how much of it is left means knowing how many of *that class* have
+-- already gone out. Counting only the total would let the split drift with every
+-- tick — six follow-ups sent this morning would still leave a full follow-up
+-- allowance this afternoon.
+create or replace function public.sent_today_count(
+  p_account_id   uuid,
+  p_is_follow_up boolean default null
+)
 returns int
 language sql
 stable
@@ -634,16 +733,22 @@ as $$
     from public.sends
    where gmail_account_id = p_account_id
      and status = 'sent'
+     and (p_is_follow_up is null or is_follow_up = p_is_follow_up)
      and sent_at >= (date_trunc('day', now() at time zone 'Asia/Kolkata')
                        at time zone 'Asia/Kolkata');
 $$;
 
+-- Same reason as the claim: a new default argument creates a second function
+-- rather than replacing the old one, and a one-argument call would keep resolving
+-- to the version that cannot tell the two classes apart.
+drop function if exists public.sent_today_count(uuid);
+
 -- Revoking from PUBLIC strips the default EXECUTE for every role, including the
 -- secret key's, so service_role has to be granted back explicitly.
-revoke all on function public.claim_due_sends(uuid, int) from public, anon, authenticated;
-revoke all on function public.sent_today_count(uuid)     from public, anon, authenticated;
-grant execute on function public.claim_due_sends(uuid, int) to service_role;
-grant execute on function public.sent_today_count(uuid)     to service_role;
+revoke all on function public.claim_due_sends(uuid, int, boolean) from public, anon, authenticated;
+revoke all on function public.sent_today_count(uuid, boolean)     from public, anon, authenticated;
+grant execute on function public.claim_due_sends(uuid, int, boolean) to service_role;
+grant execute on function public.sent_today_count(uuid, boolean)     to service_role;
 
 
 -- ═══════════════════════════════════════════════════════════════════════════

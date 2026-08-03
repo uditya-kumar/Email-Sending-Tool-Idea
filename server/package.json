@@ -9,6 +9,7 @@
     "build": "tsc",
     "start": "node dist/server/src/index.js",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test --experimental-test-module-mocks test/*.test.ts",
     "db:types": "node scripts/gen-db-types.mjs"
   },
   "license": "ISC",

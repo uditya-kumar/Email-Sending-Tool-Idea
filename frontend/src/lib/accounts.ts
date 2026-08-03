@@ -16,7 +16,7 @@ import { supabase } from "./supabase"
 async function loadSenders(): Promise<SenderAccount[]> {
   const { data, error } = await supabase
     .from("gmail_accounts_public")
-    .select("id, email, display_name, daily_limit, status, created_at")
+    .select("id, email, display_name, daily_limit, follow_up_share_pct, status, created_at")
     .order("created_at", { ascending: true })
 
   if (error) throw new Error(error.message)
@@ -78,19 +78,25 @@ export function useSenders(): {
 }
 
 /**
- * Change a sender's daily cap.
+ * Change a sender's daily cap and how much of it follow-ups may take.
  *
- * Goes through the `set_daily_limit` SECURITY DEFINER function rather than an
- * UPDATE: the browser has no write privilege on `gmail_accounts`, and this is the
- * one field of it the UI is allowed to change.
+ * Goes through the `set_send_budget` SECURITY DEFINER function rather than an
+ * UPDATE: the browser has no write privilege on `gmail_accounts`, and these are the
+ * only two fields of it the UI is allowed to change.
+ *
+ * Both in one call because they are edited together and read together by every
+ * tick. Two RPCs would let a failure between them leave a cap the user never chose
+ * paired with a share they did.
  */
-export async function setDailyLimit(
+export async function setSendBudget(
   accountId: string,
-  limit: number
+  limit: number,
+  followUpSharePct: number
 ): Promise<string | null> {
-  const { error } = await supabase.rpc("set_daily_limit", {
+  const { error } = await supabase.rpc("set_send_budget", {
     p_account_id: accountId,
     p_limit: limit,
+    p_follow_up_share: followUpSharePct,
   })
 
   return error ? error.message : null

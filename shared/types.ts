@@ -149,6 +149,13 @@ export interface SenderAccount {
   name: string
   /** Daily send cap — the deliverability guard (see CLAUDE.md). */
   dailyLimit: number
+  /**
+   * Percentage of `dailyLimit` reserved for follow-ups on a capped day — a
+   * ceiling either class can borrow past, not a quota. See `shared/send-budget.ts`.
+   *
+   * A percentage rather than a count so it survives a change to `dailyLimit`.
+   */
+  followUpSharePct: number
   /** `needs_reauth` is rendered as a Reconnect prompt rather than a silent failure. */
   status: AccountStatus
 }
