@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import { projectSequenceSchedule } from "@shared/schedule.ts"
 import { ComposeHeader } from "./ComposeHeader"
@@ -7,6 +7,7 @@ import { PreviewStep } from "./PreviewStep"
 import { resyncSchedule } from "@/lib/api"
 import { fullName } from "@/lib/leads"
 import { useSends } from "@/lib/sends"
+import { isPersistedStepId } from "@/lib/sequences"
 import {
   appendFollowUp,
   describeSequence,
@@ -22,6 +23,16 @@ import type {
   SequenceStep,
   StepAttachment,
 } from "@/lib/types"
+
+/**
+ * How long after the last +/- click to re-time the queued send.
+ *
+ * Longer than it needs to be for one click and shorter than a deliberate pause:
+ * the point is that holding the button through 1→5 fires one round trip, not five.
+ * Kept under `useSequences`'s own 800ms content debounce so the sequence is
+ * flush-then-resync in one hop rather than two waits stacked end to end.
+ */
+const RESYNC_DEBOUNCE_MS = 500
 
 interface ComposeFlowProps {
   lead: Lead
@@ -126,6 +137,55 @@ export function ComposeFlow({
   const [busy, setBusy] = useState(false)
 
   /**
+   * A pending trailing resync, so a burst of +/- clicks re-times the queue once at
+   * the end instead of once per click.
+   *
+   * The resync is a server round trip that re-reads `sequence_steps` and rewrites
+   * `sends.scheduled_at`, and only its **last** answer can be right while the user
+   * is still clicking — every earlier one computes from a wait that has already been
+   * superseded. Debouncing it is therefore not just cheaper, it removes a race.
+   *
+   * A ref, not state: the timer id must never cause a render, and the cleanup below
+   * has to see the latest value rather than a closed-over one.
+   */
+  const resyncTimer = useRef<number | null>(null)
+
+  /*
+   * Run a still-pending resync on unmount, and on a lead change (`ComposeFlow` is
+   * keyed by lead id, so switching recipients unmounts this one).
+   *
+   * Without this, closing the editor within the debounce window after a wait change
+   * leaves the queued send on its old date: the step edit is saved — `useSequences`
+   * flushes on unmount too — but nothing ever tells the server to re-time the row,
+   * and the rail would then disagree with the queue on reopening.
+   *
+   * `onFlush` first, for the same reason as in `resyncSoon`, and this is the case
+   * that needs it most: both debounces are cut short here, so the content write is
+   * certainly still pending. Fire-and-forget — the component is going away and there
+   * is nothing left to render an outcome into. `sendsStore.refresh` is skipped for
+   * the same reason.
+   *
+   * Neither callback is in the dependency list: both are redeclared every render, so
+   * depending on them would tear down and re-create the effect constantly. What they
+   * close over that matters here — `lead.id` — cannot change without a remount.
+   */
+  useEffect(
+    () => () => {
+      if (resyncTimer.current === null) return
+      window.clearTimeout(resyncTimer.current)
+      resyncTimer.current = null
+
+      void onFlush()
+        .then(() => resyncSchedule(lead.id))
+        .catch((cause: unknown) => {
+          console.warn("Couldn't re-time the queued send on close", cause)
+        })
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lead.id]
+  )
+
+  /**
    * This recipient's queue rows — what the scheduler has actually committed to.
    * SELECT-only to the browser, so a row here is the server's word, not the UI's.
    */
@@ -216,6 +276,30 @@ export function ComposeFlow({
   }
 
   /**
+   * `resync`, but only after the user stops clicking — and only once the edit behind
+   * it is actually in the database.
+   *
+   * For the +/- buttons, which get nudged several times in a row. Each click already
+   * shows its new dates immediately (the rail projects from `steps`), so the round
+   * trip behind it has nothing to contribute until the number settles.
+   *
+   * The flush is not optional, and it is the same trap `changeSendTime` documents one
+   * level down: `resync-schedule` re-reads `sequence_steps` to decide the new time,
+   * so a resync that overtakes the debounced write would read the *old* wait, compute
+   * the date the row already has, and move nothing — leaving the queue on a date the
+   * rail has stopped showing. Awaiting the flush makes this correct regardless of how
+   * the two debounce windows compare.
+   */
+  function resyncSoon() {
+    if (resyncTimer.current !== null) window.clearTimeout(resyncTimer.current)
+
+    resyncTimer.current = window.setTimeout(() => {
+      resyncTimer.current = null
+      void onFlush().then(() => resync())
+    }, RESYNC_DEBOUNCE_MS)
+  }
+
+  /**
    * The send time is the other input to a queued follow-up's scheduled time, so
    * changing it leaves that row as stale as changing a wait does.
    *
@@ -248,25 +332,50 @@ export function ComposeFlow({
   }
 
   /**
-   * Changing a wait: shown immediately, saved and resynced behind it.
+   * Changing a wait: local and instant, saved on a debounce, resynced after that.
    *
-   * Split out of `runStructural` because of `busy`. The others rebuild the step
-   * list — adding or deleting renumbers positions, and a second click before the
-   * read-back lands would compute from stale ones — so locking the rail is
-   * protecting something real. A wait is just a number on one step: it can't
-   * collide, and `setDelayDays` is applied to whatever the latest list is anyway.
-   * Locking it made the +/- buttons unclickable for the length of a round trip,
-   * which is precisely the control a user nudges several times in a row.
+   * Deliberately **not** `onStepsChange`. That path is for edits that change the
+   * *shape* of the list — it flushes, deletes the rows that are gone, upserts every
+   * step, reads them back, and replaces local state with the result. All of which a
+   * wait change needs none of: it is one integer on one row that already exists.
    *
-   * The dates below update on this render, not when the write returns:
-   * `onStepsChange` shows the new list optimistically and
-   * `projectSequenceSchedule` re-derives from it — for the queued follow-up too,
-   * which is why `desiredFollowUpTime` is shared rather than the row being trusted
-   * verbatim. The resync then moves the row to the date already on screen.
+   * The read-back is what made the buttons stutter. Clicking 1→5 quickly puts five
+   * whole-list saves in flight, and they resolve in whatever order the network
+   * chooses — so the response carrying `4` lands after the optimistic `5` and stamps
+   * `4` back onto the screen. That is the jitter: not a slow update, but a correct
+   * one being overwritten by a stale reply. `onEditStep` has no read-back at all, so
+   * there is nothing left to arrive late and contradict what the user sees. It also
+   * coalesces, turning a five-click burst into one UPDATE instead of five
+   * delete-upsert-select round trips.
+   *
+   * Safe on the two counts `onStepsChange` exists for. Ids: a wait card can only be
+   * clicked on a step that is already rendered from the database, and the guard below
+   * makes that explicit rather than assumed. Positions: nothing moves, so there is
+   * no renumber to collide with the deferred `(lead_id, position)` constraint —
+   * `saveStepContent` writes every column *except* `position` for exactly this
+   * reason.
+   *
+   * The dates update on this render rather than when the write returns:
+   * `projectSequenceSchedule` derives from `steps`, and `onEditStep` has already
+   * changed that. `resyncSoon` then moves the queued row to the date on screen —
+   * once, after the clicking stops.
    */
-  async function changeDelay(id: string, days: number) {
-    await onStepsChange(setDelayDays(steps, id, days))
-    await resync()
+  function changeDelay(id: string, days: number) {
+    /*
+     * A delay step with a placeholder id has never been saved, so there is no row for
+     * the debounced write to update — `editStep` would drop it silently and the wait
+     * would revert on the next read. Falling back to the whole-list save is what
+     * turns it into a real row. Not reachable today (a wait only appears alongside
+     * the follow-up whose insert created it), and cheap insurance against it becoming
+     * reachable.
+     */
+    if (!isPersistedStepId(id)) {
+      void onStepsChange(setDelayDays(steps, id, days)).then(() => resync())
+      return
+    }
+
+    onEditStep(id, { waitDays: days })
+    resyncSoon()
   }
 
   /**

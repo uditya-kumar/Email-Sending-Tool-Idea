@@ -13,7 +13,6 @@ import {
   describeSequence,
   duplicateEmailStep,
   removeEmailStep,
-  setDelayDays,
 } from "@/lib/sequence"
 import type { SequenceStep } from "@/lib/types"
 import type { TemplatesStore } from "@/lib/use-templates"
@@ -134,6 +133,25 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
     await runStructural(removeEmailStep(steps, id))
   }
 
+  /**
+   * Changing a wait: local and instant, saved on the same debounce as the text.
+   *
+   * `runStructural` is the wrong tool for this, and here it was doubly wrong: it has
+   * no optimistic update at all, so every click on +/- waited for a delete, an upsert
+   * of every step and a read-back before the number moved — and then a burst of
+   * clicks resolved out of order, letting an earlier reply overwrite a later one.
+   * `editStep` changes local state on the spot and coalesces the writes, which is
+   * what these buttons want: one column on one row, no positions moving.
+   *
+   * A template's step ids are always real UUIDs — `createTemplate` persists the
+   * starting steps before the page ever renders them — so there is no placeholder
+   * case to fall back for, unlike the compose rail.
+   */
+  function changeDelay(id: string, days: number) {
+    if (!template) return
+    store.editStep(template.id, id, { waitDays: days })
+  }
+
   if (loading) {
     return (
       <div className="flex flex-1 items-center justify-center">
@@ -194,9 +212,7 @@ export function TemplatesPage({ store, senderEmail }: TemplatesPageProps) {
               onAddStep={() => void addStep()}
               onDuplicateStep={(id) => void runStructural(duplicateEmailStep(steps, id))}
               onDeleteStep={(id) => void deleteStep(id)}
-              onChangeDelay={(id, days) =>
-                void runStructural(setDelayDays(steps, id, days))
-              }
+              onChangeDelay={(id, days) => changeDelay(id, days)}
             />
 
             {/* Dotted canvas — same as the compose Content step. */}
