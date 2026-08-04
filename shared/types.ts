@@ -290,16 +290,23 @@ export type StepTiming =
  */
 export interface LeadEngagement {
   /**
-   * How many times the tracking pixel was fetched, at most once per 10 seconds.
+   * How many times this recipient **read the thread** — not how many pixel
+   * fetches arrived.
    *
-   * That window is enforced in `recordOpen`, and it is the *only* dedupe in the
-   * stack — anything further apart is counted, including a re-open a few seconds
-   * later. Deliberately re-opening a message is the clearest evidence of a human
-   * there is, so collapsing it would discard the signal this number exists for.
+   * The two differ because opening a thread fetches the pixel of every message in
+   * it, so a lead three steps into their sequence produces three fetches per
+   * read. `lead_engagement` groups a lead's opens into reads by elapsed time
+   * (fetches ≤ 10s apart are one read), which is what keeps one read showing as
+   * `1` however long the thread has grown.
+   *
+   * Anything further apart than that window still counts separately, including a
+   * re-open fifteen seconds later: deliberately re-opening a message is the
+   * clearest evidence of a human there is, and collapsing it would discard the
+   * signal this number exists for.
    */
   opens: number
   /**
-   * How many opens arrived through a provider's image proxy.
+   * How many of those reads involved a provider's image proxy.
    *
    * **Not a noise count to subtract.** Gmail serves every image through
    * GoogleImageProxy, including the fetch caused by a human opening the message,

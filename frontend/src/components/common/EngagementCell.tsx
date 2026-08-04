@@ -37,6 +37,10 @@ const REPEAT_OPEN_THRESHOLD = 2
  * is not, and three clicks is a warmer lead than one. Clicks are never deduplicated
  * anywhere in the stack — a second click is a real second click — so they read at
  * face value, which is why any click at all is coloured.
+ *
+ * `opens` is reads, not pixel fetches: a thread with three follow-ups in it fetches
+ * three pixels per read, and `lead_engagement` collapses those back into one. So
+ * the number here does not grow just because the sequence got longer.
  */
 export function EngagementCell({ engagement }: EngagementCellProps) {
   if (!engagement) {

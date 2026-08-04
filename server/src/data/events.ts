@@ -41,6 +41,9 @@ export interface RecordEventInput {
  *
  * Kept in sync with the same list in `lead_engagement` (`supabase/schema.sql`),
  * which recomputes this from `events.user_agent` for the `proxy_opens` count.
+ *
+ * Deliberately not used to dedupe: the sibling-pixel problem it looks like it
+ * could solve is handled by grouping opens into reads in the view instead.
  */
 const PROXY_AGENT_MARKERS = ["googleimageproxy", "yahoomailproxy", "ggpht.com"]
 
@@ -101,7 +104,17 @@ export async function hasRecentEvent(
 }
 
 /**
- * Record an open unless it duplicates one from seconds ago.
+ * Record an open unless it duplicates one from seconds ago **on the same send**.
+ *
+ * Per-send is as far as this can go, and it is deliberately not where the
+ * user-facing count is decided. Opening a thread makes the client fetch the pixel
+ * of every message in it, so one read of a three-step sequence arrives here as
+ * three requests — different `send_id`s, sometimes 50ms apart. Widening this
+ * check to the lead would not fix that: the requests are concurrent, so each can
+ * pass a read-then-insert test before the other's row is visible. The reads-not-
+ * fetches grouping therefore lives in `lead_engagement`, which counts at read
+ * time and cannot race; this window stays as a cheap guard on row volume from a
+ * single client re-fetching one pixel.
  *
  * A proxied fetch is **recorded**, not skipped — see `PROXY_AGENT_MARKERS`. The
  * user agent is stored as-is so the proxy question can be asked later, at display

@@ -570,22 +570,38 @@ grant select on public.gmail_accounts_public to authenticated;
 --  while a second read later is a human — so it is the open *count*, not the
 --  fact of an open, that the UI leans on.
 --
---  `open_count` is a plain row count. Deduplication happens once, in
---  `recordOpen`, which refuses a second open on the same send within 10 seconds;
---  by the time a row exists it has already earned its place. This view used to
---  re-dedupe on `date_trunc('minute', created_at)`, which was wrong twice over:
---  it bucketed on the wall clock rather than elapsed time (two fetches 2s apart
---  either side of :00 counted twice, two fetches 49s apart inside one minute
---  counted once), and it discarded deliberate re-opens — the exact evidence of a
---  human that the count exists to surface. Removed 2026-08-02 after three real
---  re-opens 11–16s apart were each silently collapsed.
+--  `open_count` counts READS, not event rows, and the difference is the whole
+--  reason the query below is not a plain `count(*)`. Opening a thread makes the
+--  mail client fetch the pixel of **every message in it**, so a lead two steps
+--  into their sequence produces two open events per read — one per `send_id`,
+--  fractions of a second apart. Summing rows therefore multiplied one read by the
+--  number of emails sent, which is exactly what the owner saw (2026-08-04, lead
+--  c6fd9e77: 15 rows across two sends, 10 actual reads, six sibling pairs inside
+--  the same third of a second).
 --
---  `proxy_opens` counts opens fetched through a provider's image proxy. Note
---  this is NOT a noise count to subtract: Gmail serves every image through
---  GoogleImageProxy, including the fetch a human opening the message causes, so
---  a Gmail recipient's opens are all "proxy" opens and are all real. It exists
---  only so the UI can hedge the *single*-open case, where the ambiguity actually
---  lives (a lone open seconds after delivery is likely a prefetch).
+--  Consecutive opens ≤ 10s apart are collapsed into one read by a gap-based
+--  session (`starts_read` → running sum → group). Two dedupe layers exist as a
+--  result, and they cover different things: `recordOpen`'s window is per SEND and
+--  bounds row volume, while this one is per LEAD and is what makes the count mean
+--  "reads". The per-lead rule cannot live in `recordOpen` — the sibling fetches
+--  arrive concurrently, so both requests can pass a read-then-insert check before
+--  either row is visible to the other. Counting at read time needs no lock and
+--  leaves `events` a faithful log of what was actually fetched.
+--
+--  The window is elapsed time, never a clock bucket. An earlier version grouped on
+--  `date_trunc('minute', created_at)`, which was arbitrary in both directions (two
+--  fetches 2s apart either side of :00 counted twice; two 49s apart inside one
+--  minute counted once) and discarded deliberate re-opens — the clearest evidence
+--  of a human there is. Removed 2026-08-02 after three real re-opens 11–16s apart
+--  were silently collapsed; the 10s gap here still counts those as separate reads.
+--
+--  `proxy_opens` counts READS that involved a provider's image proxy (`bool_or`,
+--  since a read is one read either way). Note this is NOT a noise count to
+--  subtract: Gmail serves every image through GoogleImageProxy, including the
+--  fetch a human opening the message causes, so a Gmail recipient's opens are all
+--  "proxy" opens and are all real. It exists only so the UI can hedge the
+--  *single*-open case, where the ambiguity actually lives (a lone open seconds
+--  after delivery is likely a prefetch).
 --
 --  security_invoker = true (unlike gmail_accounts_public): the browser is
 --  allowed to select `events` and `sends` directly, so the caller's own RLS
@@ -594,27 +610,89 @@ grant select on public.gmail_accounts_public to authenticated;
 -- ═══════════════════════════════════════════════════════════════════════════
 create or replace view public.lead_engagement
 with (security_invoker = true) as
-  select
-    s.lead_id,
-    -- One row, one open. See the header note on why there is no second dedupe
-    -- layer here: `recordOpen`'s 10s window is the only one, and adding a
-    -- coarser bucket on top of it threw away real re-opens.
-    count(*) filter (where e.type = 'open')::int  as open_count,
-    -- Kept in sync with PROXY_AGENT_MARKERS in server/src/data/events.ts.
-    count(*) filter (
-      where e.type = 'open'
-        and lower(coalesce(e.user_agent, '')) ~ 'googleimageproxy|yahoomailproxy|ggpht\.com'
-    )::int as proxy_opens,
-    count(*) filter (where e.type = 'click')::int as click_count,
-    count(distinct case when e.type = 'click' then e.url end)::int as distinct_links,
-    count(*) filter (where e.type = 'reply')::int as reply_count,
-    max(e.created_at) filter (where e.type = 'open')  as last_open_at,
-    max(e.created_at) filter (where e.type = 'click') as last_click_at
-  from public.sends s
-  -- LEFT, so a lead that was sent to but never engaged still gets a row of
-  -- zeroes. An absent row would be indistinguishable from "not sent yet".
-  left join public.events e on e.send_id = s.id
-  group by s.lead_id;
+with
+  -- Every open, tagged with whether it begins a new read or continues the one
+  -- before it. Partitioned by LEAD, not by send: the point is that the sibling
+  -- messages of one thread belong to the same read.
+  open_fetches as (
+    select
+      s.lead_id,
+      e.created_at,
+      e.user_agent,
+      case
+        when e.created_at
+               - lag(e.created_at) over (partition by s.lead_id order by e.created_at)
+             <= interval '10 seconds'
+        then 0
+        else 1
+      end as starts_read
+    from public.sends s
+    join public.events e on e.send_id = s.id
+    where e.type = 'open'
+  ),
+  -- A running sum over that flag numbers the reads: every fetch inside one read
+  -- carries the same `read_no`. Chained on purpose — a client re-fetching every
+  -- 9s is one long read, not forty.
+  numbered as (
+    select
+      lead_id,
+      created_at,
+      user_agent,
+      sum(starts_read) over (
+        partition by lead_id order by created_at rows unbounded preceding
+      ) as read_no
+    from open_fetches
+  ),
+  reads as (
+    select
+      lead_id,
+      read_no,
+      max(created_at) as ended_at,
+      -- Kept in sync with PROXY_AGENT_MARKERS in server/src/data/events.ts.
+      bool_or(
+        lower(coalesce(user_agent, '')) ~ 'googleimageproxy|yahoomailproxy|ggpht\.com'
+      ) as via_proxy
+    from numbered
+    group by lead_id, read_no
+  ),
+  opens as (
+    select
+      lead_id,
+      count(*)::int as open_count,
+      count(*) filter (where via_proxy)::int as proxy_opens,
+      max(ended_at) as last_open_at
+    from reads
+    group by lead_id
+  ),
+  -- Clicks and replies still count raw rows. A click is a deliberate act, so a
+  -- second one is a second click; and the pixel-per-message problem has no click
+  -- equivalent, since a link only exists in the message it belongs to.
+  engagement as (
+    select
+      s.lead_id,
+      count(*) filter (where e.type = 'click')::int as click_count,
+      count(distinct case when e.type = 'click' then e.url end)::int as distinct_links,
+      count(*) filter (where e.type = 'reply')::int as reply_count,
+      max(e.created_at) filter (where e.type = 'click') as last_click_at
+    from public.sends s
+    -- LEFT, so a lead that was sent to but never engaged still gets a row of
+    -- zeroes. An absent row would be indistinguishable from "not sent yet".
+    left join public.events e on e.send_id = s.id
+    group by s.lead_id
+  )
+select
+  g.lead_id,
+  -- coalesce because `opens` only has rows for leads that were actually opened,
+  -- while `engagement` has one for every lead with a send.
+  coalesce(o.open_count, 0)  as open_count,
+  coalesce(o.proxy_opens, 0) as proxy_opens,
+  g.click_count,
+  g.distinct_links,
+  g.reply_count,
+  o.last_open_at,
+  g.last_click_at
+from engagement g
+left join opens o on o.lead_id = g.lead_id;
 
 revoke all on public.lead_engagement from anon;
 grant select on public.lead_engagement to authenticated;

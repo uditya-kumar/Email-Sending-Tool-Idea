@@ -983,6 +983,42 @@ or less, the date in below cards should change immediately, it should sync behin
       owner's own IP (`14.194.135.206`) across both links — the signed redirect works from a phone's
       inbox, which is the signal that matters most. Found while investigating the open-count bug, not
       by looking for it.
+- [x] **`open_count` counts reads, not pixel fetches** — migration
+      `20260804040000_count_thread_opens_once`.
+
+      > ⚠️ **Reported by the owner (2026-08-04): opening a two-message thread once moved the count by
+      > two.** Opening a thread makes the mail client fetch the pixel of **every message in it**, so a
+      > lead N steps into their sequence recorded N open events per read — one per `send_id`, and
+      > `lead_engagement` summed them. The count therefore scaled with how many follow-ups had been
+      > sent rather than with how often the recipient read anything: a 4-step sequence would have
+      > reported 4 opens for one read.
+      >
+      > The log is unambiguous. Lead `c6fd9e77`, sends `ddce56b4` (step 0) and `9f20c024` (step 2):
+      > 15 open rows that were **10 real reads**, six of them sibling pairs 0.05–0.35s apart
+      > (`02:45:54.957`/`02:45:55.310`, `02:46:10.676`/`02:46:10.934`, …).
+      >
+      > Fixed in the **view**, not in `recordOpen`, and that placement is the load-bearing part.
+      > `recordOpen`'s 10s window is keyed on `send_id`; re-keying it on the lead would still lose the
+      > race, because the sibling fetches are concurrent — both requests can pass a read-then-insert
+      > check before either row is visible to the other. Counting at read time needs no lock, cannot
+      > race, and leaves `events` a faithful log of what was actually fetched. The two dedupe layers
+      > now cover different things: per-send bounds row volume, per-lead defines the number.
+      >
+      > The grouping is a **gap-based session** — consecutive opens ≤ 10s apart are one read
+      > (`lag` → `starts_read` → running sum → group). Expressed in elapsed time, deliberately, for
+      > exactly the reason the `date_trunc('minute')` bucket was removed two days earlier. Verified
+      > against synthetic fixtures covering the cases that bucket got *backwards*: 3 sibling pixels
+      > 100ms apart → **1**; the same thread read twice 15s apart → **2**; two fetches 2s apart
+      > straddling `:00` → **1** (bucket said 2); two 49s apart inside one minute → **2** (bucket said
+      > 1); single-step lead, one read → **1**.
+      >
+      > **Then confirmed live from the inbox.** A read that landed mid-fix wrote events 50 and 51
+      > (steps 0 and 2, `03:59:52.230` / `03:59:52.335`) and the view went `10 → 11`, not `10 → 12`.
+      > Backfilled data reads correctly too: the same 15 rows that reported 15 now report 10.
+      >
+      > Lesson, and it is the same one as the minute bucket in a new costume: the unit the count is
+      > *reported* in has to be the unit the user thinks in. "Opens" means reads by a person, and a
+      > per-message pixel is an implementation detail of threading that leaked into the number.
 
 ## Phase 12 — Deploy
 *Decide only once Phases 0–11 work locally.*
