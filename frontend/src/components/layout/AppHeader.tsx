@@ -1,5 +1,6 @@
-import { Database, FileText, LogOut, Mail, Settings, UserRound } from "lucide-react"
+import { Database, FileText, LogOut, Settings, UserRound } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import logo from "@/assets/logo.png"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,9 +53,15 @@ export function AppHeader({
     <header className="flex items-center justify-between gap-4 border-b bg-background px-4 py-2.5">
       <div className="flex items-center gap-3">
         <span className="flex items-center gap-2 font-semibold text-foreground">
-          <span className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Mail className="size-4" />
-          </span>
+          {/*
+           * No tinted square behind it, unlike the lucide `Mail` this replaces: the
+           * logo already carries its own circle and brand red, so a `bg-primary`
+           * tile would just box one red disc inside another.
+           *
+           * Empty alt — "Outreach" is spelled out immediately to the right, so
+           * naming it here would make a screen reader read the brand twice.
+           */}
+          <img src={logo} alt="" className="size-7" />
           Outreach
         </span>
 
