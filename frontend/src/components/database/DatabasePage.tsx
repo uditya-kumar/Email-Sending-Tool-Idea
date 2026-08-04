@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils"
 import { LEAD_COLUMNS } from "./leadColumns"
 import { LeadDialog } from "./LeadDialog"
 import { CancelScheduleDialog } from "./CancelScheduleDialog"
+import { DeleteLeadDialog } from "./DeleteLeadDialog"
 import { leadsToCsv, parseLeadsCsv, type RejectedRow } from "@/lib/csv"
 import type { NewLead } from "@/lib/leads"
 import type { EngagementStore } from "@/lib/engagement"
@@ -105,6 +106,8 @@ export function DatabasePage({
   const [editingLead, setEditingLead] = useState<Lead | null>(null)
   /** The recipient whose schedule is about to be cancelled; null = no dialog. */
   const [cancellingLead, setCancellingLead] = useState<Lead | null>(null)
+  /** The recipient about to be deleted; null = no dialog. */
+  const [deletingLead, setDeletingLead] = useState<Lead | null>(null)
   /** True while a CSV is being parsed and inserted. */
   const [importing, setImporting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -133,6 +136,20 @@ export function DatabasePage({
     return saved !== null
   }
 
+  /**
+   * Remove a confirmed recipient.
+   *
+   * Only forgets the sequence if the row actually went — see `remove`'s note. A
+   * failure needs no toast here: `useLeads` reports its own through `onError`.
+   */
+  async function handleDeleteLead(lead: Lead) {
+    const deleted = await store.remove(lead.id)
+    if (!deleted) return
+
+    onLeadDeleted(lead.id)
+    toast.success(`Removed ${lead.email}`)
+  }
+
   const table = useReactTable({
     data: leads,
     columns: LEAD_COLUMNS,
@@ -149,9 +166,8 @@ export function DatabasePage({
      */
     meta: {
       onEditTime: store.setSendTime,
-      // Only forget the sequence if the row actually went — see `remove`'s note.
-      onDelete: (id) =>
-        void store.remove(id).then((deleted) => deleted && onLeadDeleted(id)),
+      // Opens the confirmation; the removal itself is in `handleDeleteLead`.
+      onDelete: setDeletingLead,
       onEdit: (lead) => {
         setEditingLead(lead)
         setDialogOpen(true)
@@ -398,6 +414,12 @@ export function DatabasePage({
         lead={cancellingLead}
         onOpenChange={(open) => !open && setCancellingLead(null)}
         onConfirm={onCancelSchedule}
+      />
+
+      <DeleteLeadDialog
+        lead={deletingLead}
+        onOpenChange={(open) => !open && setDeletingLead(null)}
+        onConfirm={(lead) => void handleDeleteLead(lead)}
       />
     </div>
   )

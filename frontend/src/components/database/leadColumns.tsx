@@ -25,7 +25,11 @@ declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface TableMeta<TData extends RowData> {
     onEditTime: (id: string, value: string) => void
-    onDelete: (id: string) => void
+    /**
+     * Opens the delete confirmation. Takes the whole lead rather than an id
+     * because the dialog names the recipient by email address.
+     */
+    onDelete: (lead: Lead) => void
     onEdit: (lead: Lead) => void
     /** Opens this recipient's own Content → Preview → Launch flow. */
     onSend: (lead: Lead) => void
@@ -201,10 +205,13 @@ export const LEAD_COLUMNS: ColumnDef<Lead>[] = [
           >
             <Pencil />
           </Button>
+          {/* Opens the confirmation rather than deleting outright: this icon sits
+              right beside Edit, and a stray click would otherwise take the
+              recipient's send history with it. */}
           <Button
             variant="destructive"
             size="icon-sm"
-            onClick={() => actions?.onDelete(row.original.id)}
+            onClick={() => actions?.onDelete(row.original)}
             aria-label="Delete lead"
           >
             <Trash2 />
