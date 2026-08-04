@@ -90,6 +90,7 @@ would let the preview lie about what actually gets sent. Holds: `types.ts`, `mer
 | Gmail auth | Google Cloud OAuth client (Gmail API enabled) |
 | Hosting | **Frontend on Vercel** (`frontend/vercel.json`); **Express + cron on EC2**; Supabase managed |
 | Public hostnames | `api.udityakumar.dev` (API) and `track.udityakumar.dev` (pixel/links) — one Caddy, one `localhost:8080`, two site blocks, Let's Encrypt certs |
+| Deploy / rebuild | `DEPLOY-BACKEND.md` — has runbooks for **the EC2 instance changing** (free tier expiring, new AWS account) and **the domain changing**. Follow those rather than re-deriving; both hinge on reusing `TOKEN_ENCRYPTION_KEY` and `TRACKING_HMAC_SECRET`, which a fresh install would silently regenerate. |
 | Local tunnel for tracking | **cloudflared** — ngrok's free interstitial blocks Gmail's image proxy |
 
 ## Supabase schema (built — 12 tables, 2 views)

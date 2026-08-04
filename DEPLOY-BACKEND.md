@@ -7,6 +7,13 @@ gives it HTTPS, and connects the two.
 Estimated time: **2–3 hours** the first time, most of it waiting on DNS and
 Google's consent screen.
 
+**Already deployed and something changed?** Don't re-read this top to bottom —
+jump to the runbook:
+
+- **New EC2 box or new AWS account** → [Runbook: the EC2 instance changed](#runbook-the-ec2-instance-changed-new-box-or-a-new-aws-account)
+- **New domain** → [Runbook: the domain changed](#runbook-the-domain-changed)
+- **Backups you should already have** → [Back this up now](#back-this-up-now-both-runbooks-below-depend-on-it)
+
 ---
 
 ## Read this first: three things that will bite you
@@ -672,6 +679,164 @@ automatically, and the Elastic IP means the address doesn't move.
 
 ---
 
+## Back this up now (both runbooks below depend on it)
+
+The EC2 box is **disposable**; two strings on it are not. Copy these into a
+password manager today, because losing them is the only part of a rebuild that
+cannot be undone:
+
+| Value | Lose it and… |
+|---|---|
+| `TOKEN_ENCRYPTION_KEY` | the stored Gmail refresh token is permanently undecryptable (AES-256-GCM). Recoverable only by reconnecting Gmail in Settings. |
+| `TRACKING_HMAC_SECRET` | every click link in **already-sent** mail fails `verify()` and 400s (`tracking-links.ts:72`). Opens still work — the pixel isn't signed. Unrecoverable. |
+| `outreach-key.pem` | no SSH into the existing box, ever. |
+
+Everything else regenerates or is stored elsewhere:
+
+- **Database, leads, sends, events, encrypted Gmail tokens** → Supabase, not EC2.
+- **Frontend** → Vercel, built from git.
+- **Server code** → git.
+- `SUPABASE_SECRET_KEY`, `GOOGLE_CLIENT_SECRET` → re-readable from their consoles.
+
+Easiest complete backup, run on the box:
+
+```bash
+cat ~/app/server/.env
+```
+
+Save that output somewhere safe. It *is* the migration payload.
+
+---
+
+## Runbook: the EC2 instance changed (new box, or a new AWS account)
+
+Use this when the free tier expires, the account closes, or the instance is lost.
+**Nothing about the emails you've already sent breaks here** — sent mail contains
+hostnames, never the IP — so if you keep the same domain, recipients can't tell
+this happened.
+
+An Elastic IP **cannot move between AWS accounts**, so a new account always means
+a new IP, and DNS is what makes that invisible.
+
+1. **Rebuild the box: Steps 1–4, then 6–8.** Skip Step 5 (you already own the
+   domain) and skip the Caddyfile-content part of 8d until step 3 below. Same
+   instance type, same Ubuntu, same swap — 1 GB without swap cannot run `tsc`.
+2. **Allocate a new Elastic IP** and associate it (Step 3). Note it as `<EIP>`.
+   Open **22, 80 and 443** in the security group; 80 is not optional, Let's
+   Encrypt validates over it.
+3. **Repoint DNS first, before touching Caddy.** At the registrar, edit both A
+   records — `api` and `track` — to the new `<EIP>`. Then wait for it:
+
+   ```bash
+   curl -s "https://dns.google/resolve?name=api.yourdomain.com&type=A"
+   curl -s "https://dns.google/resolve?name=track.yourdomain.com&type=A"
+   ```
+
+   Both must show the new IP. Reloading Caddy before this resolves burns failed
+   ACME attempts against a rate limit, and the fix is then just waiting.
+4. **Restore `server/.env` verbatim from your backup.** Reuse
+   `TOKEN_ENCRYPTION_KEY` and `TRACKING_HMAC_SECRET` — do **not** generate fresh
+   ones (see the table above). Every other value is unchanged: same domain, so
+   `GOOGLE_REDIRECT_URI` and `TRACKING_BASE_URL` still describe reality.
+5. **Caddyfile, systemd, start** — Steps 8c and 8d unchanged.
+6. **Verify from outside AWS**, not from the box:
+
+   ```bash
+   curl https://api.yourdomain.com/healthz     # {"ok":true,"scheduler":true}
+   ```
+
+   On a DNS-filtered network this can fail while the server is perfectly fine;
+   confirm the certificate externally instead (Step 8d).
+
+**What you do *not* touch:** Google Cloud Console (the redirect URI is a
+hostname), Vercel (`VITE_SERVER_URL` is a hostname), Supabase, and the Gmail
+connection — the refresh token lives in Supabase and still decrypts, given the
+same `TOKEN_ENCRYPTION_KEY`.
+
+**Check for a double scheduler.** If the old box is still alive it is still
+sending on its own cron, and two schedulers claiming the same rows is the one
+genuinely dangerous state here. On the old box:
+`sudo systemctl disable --now outreach`, or terminate the instance.
+
+Then confirm exactly one is ticking:
+
+```sql
+select max(sent_at) from sends;   -- and watch it advance from one box only
+```
+
+---
+
+## Runbook: the domain changed
+
+Read this before deciding: **a tracking origin is one-way once mail is out.**
+`sends.body_html_rendered` stores the fully rendered HTML, so every delivered
+message carries the old hostname in its pixel and links forever. Nothing you
+change later rewrites a message sitting in someone's inbox.
+
+Check what's actually affected before planning anything:
+
+```sql
+select
+  count(*) filter (where body_html_rendered like '%old-host%') as old_host,
+  count(*) filter (where status = 'pending')                   as pending
+from sends;
+```
+
+`old_host = 0` (nothing sent yet) means you can switch freely and skip step 6.
+Otherwise the old hostname has to keep resolving and keep serving.
+
+1. **Two A records on the new domain**, `api` and `track` → `<EIP>`. Host field
+   takes the subdomain only. Verify over DNS-over-HTTPS as above.
+2. **Add** both new blocks to `/etc/caddy/Caddyfile`, keeping the old ones — one
+   `reverse_proxy localhost:8080` block per hostname, blank line between:
+
+   ```
+   api.newdomain.com   { reverse_proxy localhost:8080 }
+   track.newdomain.com { reverse_proxy localhost:8080 }
+   api.olddomain.com   { reverse_proxy localhost:8080 }
+   track.olddomain.com { reverse_proxy localhost:8080 }
+   ```
+
+   `sudo systemctl reload caddy`, then check `journalctl -u caddy` for
+   `certificate obtained successfully` on both new names.
+3. **`server/.env`** — two lines, and **leave `TRACKING_HMAC_SECRET` alone** or
+   every old click link 400s:
+
+   ```
+   GOOGLE_REDIRECT_URI=https://api.newdomain.com/api/auth/google/callback
+   TRACKING_BASE_URL=https://track.newdomain.com
+   ```
+4. **Google Cloud Console** → Credentials → OAuth client → **add** the new
+   redirect URI, character for character, keeping the old one until you've
+   verified. Google compares the string exactly; a trailing slash is a different
+   URI. Do this *before* restarting, or Gmail auth breaks in the gap.
+5. **Restart and confirm the value took**:
+
+   ```bash
+   sudo systemctl restart outreach
+   sudo journalctl -u outreach -n 20 --no-pager | grep tracking
+   ```
+
+   The `Server listening` line prints the live `tracking` origin
+   (`server/src/index.ts:85`). If it still shows the old host, the build or the
+   `.env` didn't reload.
+6. **Keep the old domain registered and its DNS pointed here** for as long as old
+   mail matters — recipients open months-old threads, and an expired domain turns
+   your own tracking links into someone else's traffic. Drop the old Caddy blocks
+   and DNS records only once `old_host` above is irrelevant.
+7. **Vercel** → `VITE_SERVER_URL=https://api.newdomain.com` → **Redeploy**. The
+   redeploy is mandatory; Vite inlines `VITE_` values at build time.
+8. **Verify**: Step 11, end to end. Reconnect Gmail deliberately so the new
+   callback is exercised, then send yourself a test and check **View original** —
+   links must read `https://track.newdomain.com/t/c/…&s=…`. The `&s=` must be
+   there; an unsigned link 400s by design rather than becoming an open redirect.
+
+**Never move to a free dynamic-DNS host** — see Step 5 for the three reasons.
+And a newly registered domain has no history: put a real site on the apex and let
+it age a week or two before running outreach volume through it.
+
+---
+
 ## Things that will surprise you later
 
 - **Supabase free plan pauses a project after ~1 week of inactivity.** A paused
@@ -681,8 +846,14 @@ automatically, and the Elastic IP means the address doesn't move.
   outreach. Worth a deliberate decision rather than a discovery.
 - **AWS free tier on a post-July-2025 account closes the account at 6 months.**
   Calendar it now.
-- **`TOKEN_ENCRYPTION_KEY` and `TRACKING_BASE_URL` are effectively permanent**
-  once you've connected Gmail and sent tracked mail.
+- **`TOKEN_ENCRYPTION_KEY`, `TRACKING_HMAC_SECRET` and `TRACKING_BASE_URL` are
+  effectively permanent** once you've connected Gmail and sent tracked mail. The
+  first two must survive any rebuild; the third is baked into delivered messages.
+  Back them up — see [Back this up now](#back-this-up-now-both-runbooks-below-depend-on-it).
+- **The EC2 box is disposable; two secrets on it are not.** Everything else lives
+  in Supabase, Vercel or git. Rebuilding is mechanical *if* you kept those two.
+- **Two schedulers is the one dangerous state.** If an old box is still running
+  after a migration, both poll the same `sends` rows. Disable the old service.
 - **Open tracking is unreliable by nature** (Apple Mail Privacy Protection
   pre-loads pixels; Gmail proxies everything). Trust clicks and replies.
 - **`ubuntu@<EIP>` with a lost `.pem` is unrecoverable.** Back the key up.
