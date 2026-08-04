@@ -9,6 +9,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { ApiError, sendTest } from "@/lib/api"
 import { isPersistedStepId } from "@/lib/sequences"
 
@@ -116,16 +122,34 @@ export function SendTestPopover({
 
   return (
     <Popover open={open} onOpenChange={(next) => !busy && setOpen(next)}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Send a test email"
-        >
-          <Send />
-        </Button>
-      </PopoverTrigger>
+      {/*
+       * Tooltip inside the popover trigger, wrapping the button: an unlabelled
+       * icon gives no clue what the arrow does until it's clicked. Nesting this
+       * way — `PopoverTrigger asChild` → `TooltipTrigger asChild` → `Button` —
+       * collapses all three onto the one element, so the button keeps both the
+       * popover's and the tooltip's handlers instead of one shadowing the other.
+       *
+       * Hidden once the popover is open (`open ? "" : undefined`). Otherwise the
+       * tooltip sits over the panel it just opened, describing an action the panel
+       * now states outright on its own button.
+       */}
+      <TooltipProvider>
+        <Tooltip {...(open ? { open: false } : {})}>
+          <PopoverTrigger asChild>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Send a test email"
+              >
+                <Send />
+              </Button>
+            </TooltipTrigger>
+          </PopoverTrigger>
+          <TooltipContent>Send test email</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
 
       <PopoverContent align="end" className="w-80 space-y-3">
         {connected ? (
