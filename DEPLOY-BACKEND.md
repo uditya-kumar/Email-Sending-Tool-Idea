@@ -19,7 +19,8 @@ error you can fix in code, the request simply never leaves. So plain
 **2. You cannot get a certificate for an AWS hostname.** Let's Encrypt
 permanently refuses `*.compute.amazonaws.com` — those names change hands, so
 issuing for them is forbidden by policy. You need a domain name you control.
-Step 5 uses DuckDNS (free) if you don't have one.
+Step 5 uses a subdomain of your own domain — **not** a free dynamic-DNS host like
+DuckDNS. That choice is about deliverability, not convenience: see Step 5.
 
 **3. Check which AWS free tier you have** — it changes what you can run:
 
@@ -126,30 +127,66 @@ home IP changed. Update the rule.
 
 ## Step 5 — A domain name (needed for HTTPS)
 
-**If you already own a domain**, create an A record pointing a subdomain
-(e.g. `api.yourdomain.com`) at `<EIP>`, then skip to Step 6 using that name.
+**Use a domain you own.** Two A records, both pointing at `<EIP>`, both served by
+the one Caddy on the one box:
 
-**Otherwise use DuckDNS** — free, works with Let's Encrypt:
+| Host | Becomes | Used for |
+|---|---|---|
+| `api` | `api.yourdomain.com` | the Express API — `VITE_SERVER_URL`, `GOOGLE_REDIRECT_URI` |
+| `track` | `track.yourdomain.com` | pixel + click links — `TRACKING_BASE_URL` |
 
-1. Go to <https://www.duckdns.org>, sign in with Google/GitHub.
-2. Under **domains**, type a name (e.g. `uditya-outreach`) → **add domain**.
-   You now own `uditya-outreach.duckdns.org`.
-3. Put `<EIP>` in the **current ip** box → **update ip**.
-4. Copy your **token** from the top of the page.
+At most registrars the **Host** field takes only the subdomain: type `api`, not
+`api.yourdomain.com`, or you get `api.yourdomain.com.yourdomain.com`. Leave the
+apex (`@`) alone — that's for a website, not this. TTL 300 while you're setting up.
 
-Verify DNS resolves before continuing — from your EC2 SSH session:
+The live deployment uses `api.udityakumar.dev` and `track.udityakumar.dev`.
+
+### Why not DuckDNS (or any free dynamic-DNS host)
+
+Earlier revisions of this guide recommended DuckDNS. **Don't.** It works for
+HTTPS and fails at the actual job:
+
+- `duckdns.org` is a shared parent domain used heavily for phishing and malware
+  C2. Malwarebytes blocks its subdomains wholesale; DuckDNS hostnames appear on
+  threat-intel blacklists daily. You inherit that reputation and cannot influence
+  it — Spamhaus DBL wildcards list at the main-domain level.
+- Filters see a `@gmail.com` From with links on an unrelated, abused domain. That
+  is the exact shape of phishing, and it is ranked a top deliverability risk.
+- Network-level DNS filters block it outright. FortiGuard on a college/corporate
+  network resolves `duckdns.org` to a block page (`208.91.112.55`) with a
+  self-signed Fortinet cert, so **the recipient cannot reach your content at
+  all** — and the frontend's fetch to the API dies with `ERR_CERT_AUTHORITY_INVALID`.
+  Both look like a broken app, not a blocked domain.
+
+A domain is ~₹1,000/year and is the single highest-impact deliverability change
+available here. A brand-new domain has no history, though — put a real site on
+the apex and let it age a week or two before running outreach volume through
+`track.`. Test sends to yourself are fine immediately.
+
+Full alignment would mean sending from `you@yourdomain.com` (Workspace, or a
+Gmail send-as) so the From and link domains match. An owned tracking subdomain
+with a Gmail From is the large improvement; that's the remaining one.
+
+### Verify DNS before continuing
+
+**Do not proceed until both names resolve** — Caddy's certificate request in
+Step 8d will fail, and repeated failures hit Let's Encrypt rate limits.
 
 ```bash
-dig +short uditya-outreach.duckdns.org
+dig +short api.yourdomain.com
+dig +short track.yourdomain.com
 ```
 
-It must print `<EIP>`. If it prints nothing, wait a minute and retry. **Do not
-proceed until this works** — the certificate request in Step 6 will fail.
+Both must print `<EIP>`. If a name resolves to something odd — `208.91.112.55`,
+say — your local resolver is intercepting. `dig` and `nslookup` both go through
+it, so check over DNS-over-HTTPS, which bypasses it:
 
-Because your IP is now static (Elastic IP), you don't need the DuckDNS updater
-cron that most tutorials add.
+```bash
+curl -s "https://dns.google/resolve?name=api.yourdomain.com&type=A"
+```
 
-From here on, `<DOMAIN>` means the name you chose.
+From here on, `<DOMAIN>` means `api.yourdomain.com` and `<TRACK_DOMAIN>` means
+`track.yourdomain.com`.
 
 ---
 
@@ -256,7 +293,7 @@ GOOGLE_REDIRECT_URI=https://<DOMAIN>/api/auth/google/callback
 TOKEN_ENCRYPTION_KEY=<from the command above>
 TRACKING_HMAC_SECRET=<from the command above>
 
-TRACKING_BASE_URL=https://<DOMAIN>
+TRACKING_BASE_URL=https://<TRACK_DOMAIN>
 FRONTEND_URL=https://outreach-tool-teal.vercel.app
 
 SCHEDULER_ENABLED=true
@@ -277,8 +314,11 @@ Notes on specific values:
 - **`FRONTEND_URL`** — no trailing slash. This single value is both the CORS
   allowed origin (`server/src/index.ts:48`) and the base of the OAuth success
   redirect (`server/src/auth/google.ts:318`).
-- **`TRACKING_BASE_URL`** — the origin baked into every pixel and click link.
-  Once emails are sent with it, changing it breaks tracking on those messages.
+- **`TRACKING_BASE_URL`** — the origin baked into every pixel and click link, so
+  it's `track.`, not `api.`. Once emails are sent with it, changing it breaks
+  tracking on those messages: old pixels and links still point at the old host.
+  If you ever do have to move it, keep a Caddy site block for the **old** name
+  proxying to the same backend, or previously-sent links start 404-ing.
 - **`CRON_SECRET`** — leave blank. `POST /api/cron/tick` then refuses all
   requests (fails closed), which is correct: `node-cron` runs in-process here.
 - **`TZ=UTC`** — all IST maths goes through Luxon with an explicit zone, but the
@@ -419,21 +459,34 @@ A config error prints `Invalid server environment` and names the field.
 sudo nano /etc/caddy/Caddyfile
 ```
 
-Replace the whole file with:
+Replace the whole file with one block per hostname — the blank line between them
+matters:
 
 ```
-<DOMAIN> {
+api.yourdomain.com {
+	reverse_proxy localhost:8080
+}
+
+track.yourdomain.com {
 	reverse_proxy localhost:8080
 }
 ```
 
-That's genuinely all — Caddy fetches the certificate on first start and renews it
-forever.
+That's genuinely all — Caddy fetches both certificates on reload and renews them
+forever. One process, one port, two names.
 
 ```bash
 sudo systemctl reload caddy
-sudo systemctl status caddy
+sudo systemctl status caddy --no-pager
 ```
+
+`ExecReload` must show `status=0/SUCCESS`. Certificate issuance takes 10–30s;
+watch it with `sudo journalctl -u caddy -n 40 --no-pager` and look for
+`certificate obtained successfully`. If the reload itself fails,
+`caddy validate --config /etc/caddy/Caddyfile` names the syntax error.
+
+`--no-pager` on both commands avoids the `...skipping...` pager (press `q` if you
+land in it anyway).
 
 Then from **your own machine**, not the EC2 box:
 
@@ -443,7 +496,21 @@ curl https://<DOMAIN>/healthz
 
 The same `{"ok":true,"scheduler":true}` over `https://` with no certificate
 warning means Steps 2–8 are done. If it fails, check `sudo journalctl -u caddy -n 50 --no-pager` — the
-usual cause is DNS not yet pointing at `<EIP>`, or port 80 not open to `0.0.0.0/0`.
+usual cause is DNS not yet pointing at `<EIP>`, port 80 not open to `0.0.0.0/0`,
+or Caddy never having been reloaded after the Caddyfile changed.
+
+**If you're on a filtered network** (college/corporate wifi), a failure here may
+be your own network, not the server. Test from mobile data, or confirm the
+certificate from outside with an external scanner:
+
+```bash
+curl -s "https://api.ssllabs.com/api/v3/analyze?host=api.yourdomain.com&startNew=on"
+# wait ~2 min, then poll without startNew:
+curl -s "https://api.ssllabs.com/api/v3/analyze?host=api.yourdomain.com&fromCache=on"
+```
+
+A `certs[0].subject` of `CN=api.yourdomain.com` issued by `O=Let's Encrypt`
+proves the server is right regardless of what your local network says.
 
 The app trusts `X-Forwarded-For` (`app.set("trust proxy", 1)`), which is exactly
 right for one proxy hop, so client IPs in logs stay accurate.
