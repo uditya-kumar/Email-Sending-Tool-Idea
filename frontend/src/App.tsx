@@ -137,8 +137,17 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
   )
   const sequences = sequencesStore.sequences
 
-  /** The connected Gmail, read from `gmail_accounts_public` under RLS. */
+  /** The connected Gmail accounts, read from `gmail_accounts_public` under RLS. */
   const { senders, refresh: refreshSenders } = useSenders()
+
+  /*
+   * One connected address, for prefilling a test send's recipient and for telling
+   * the test button that sending is possible at all. Deliberately *not* "the account
+   * we send from" — the server decides that per recipient — so any active one will
+   * do, and it must be an active one: a revoked account cannot send, and offering
+   * its address as though it could is how you find out hours later.
+   */
+  const activeSenderEmail = senders.find((s) => s.status === "active")?.email
 
   const templateStore = useTemplates((message) =>
     toast.error("Couldn't save the template", { description: message })
@@ -326,10 +335,17 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
         })
       } else {
         toast.success(`Scheduled for ${who}`, {
-          // formatIST already appends "IST" — don't add a second one.
-          description: `Sends at ${formatIST(lead.sendTimeIST)} from ${
-            result.from ?? senders[0]?.email ?? "your Gmail account"
-          }.`,
+          /*
+           * formatIST already appends "IST" — don't add a second one.
+           *
+           * The address comes from the response and is not guessed locally: with
+           * several accounts connected the server picks which one this recipient
+           * sends from, so naming the first in our own list would be a coin flip
+           * dressed up as a fact. Without it, say nothing about the sender.
+           */
+          description: result.from
+            ? `Sends at ${formatIST(lead.sendTimeIST)} from ${result.from}.`
+            : `Sends at ${formatIST(lead.sendTimeIST)}.`,
         })
       }
 
@@ -341,14 +357,41 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
 
   const editingSender = senders.find((s) => s.id === editingSenderId) ?? null
 
-  /** Disconnect a sending account — nothing can send without one, so say so. */
+  /** Disconnect a sending account, and say what that leaves you able to send from. */
   async function removeSender(sender: SenderAccount) {
     try {
       await disconnectAccount(sender.id)
-      await refreshSenders()
+      const left = await refreshSenders()
+
+      /*
+       * The count *after* the refresh, not `senders` — that state hasn't re-rendered
+       * yet at this point, so reading it here would describe the world as it was
+       * before the disconnect and could tell the user they still have an account to
+       * send from when they don't.
+       */
+      const remaining = left?.filter((s) => s.status === "active").length ?? 0
+
+      /*
+       * An account that has sent anything is *retired* rather than deleted — its
+       * rows in `sends` are the record of which mailbox each email came from, and
+       * they pin the rest of those leads' sequences to it (see `disconnectAccount`).
+       * So it stays in the list, greyed out and reconnectable, and saying "removed"
+       * would read as a bug when the row is still on screen.
+       */
+      const retired = left?.some((s) => s.id === sender.id) ?? false
+
       toast.success(`Disconnected ${sender.email} for sending`, {
         // Only the send path is affected — you're still signed in as yourself.
-        description: "Connect an account again before launching any recipients.",
+        description: [
+          retired
+            ? "It stays listed, with its send history, so it can be reconnected."
+            : null,
+          remaining
+            ? `${remaining} sending ${remaining === 1 ? "account" : "accounts"} left. Recipients already mid-sequence on ${sender.email} can't continue until it's reconnected — a follow-up won't move to another account, or it would break the thread.`
+            : "Connect an account again before launching any recipients.",
+        ]
+          .filter(Boolean)
+          .join(" "),
       })
     } catch (error) {
       toast.error("Couldn't disconnect the account", {
@@ -460,12 +503,12 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
             settings={settingsStore.settings}
             onBack={backToDatabase}
             onFlush={sequencesStore.flush}
-            senderEmail={senders[0]?.email}
+            senderEmail={activeSenderEmail}
           />
         )}
 
         {view === "templates" && (
-          <TemplatesPage store={templateStore} senderEmail={senders[0]?.email} />
+          <TemplatesPage store={templateStore} senderEmail={activeSenderEmail} />
         )}
 
         {view === "settings" && (
@@ -499,7 +542,7 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
         open={profileOpen}
         onOpenChange={setProfileOpen}
         profile={profile}
-        sender={senders[0] ?? null}
+        senders={senders}
         onSave={(name) => {
           setProfile((prev) => ({ ...prev, name }))
           toast.success("Profile updated")

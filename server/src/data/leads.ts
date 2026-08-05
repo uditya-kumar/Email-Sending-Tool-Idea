@@ -114,12 +114,39 @@ export async function markLeadReplied(leadId: string, at: Date): Promise<void> {
   )
 }
 
-/** Every lead currently mid-sequence with no reply yet — the reply watcher's input. */
-export async function listAwaitingReply(): Promise<Lead[]> {
+/**
+ * Leads mid-sequence with no reply yet, whose sequence sends from one given
+ * mailbox — the reply watcher's input.
+ *
+ * Scoped to an account rather than global, because a lead's thread lives in
+ * exactly one mailbox and only that mailbox's credentials can read it. Unscoped,
+ * every account walked every in-flight lead and discarded the ones it couldn't
+ * see, at the cost of a `lastSentFor` query each, every minute.
+ *
+ * Expressed as an inner join on `sends` rather than a column on `leads`, because
+ * the account is a property of the *send* — `leads` has no `gmail_account_id` and
+ * adding one would be a denormalisation to keep in step by hand. `!inner` makes
+ * PostgREST filter the outer rows by the embedded table instead of returning leads
+ * with an empty `sends` array.
+ *
+ * A lead with several sends matches once per send, so the ids are de-duplicated
+ * here. Doing it in SQL would need a `distinct` PostgREST can't express on an
+ * embedded filter.
+ */
+export async function listAwaitingReplyForAccount(accountId: string): Promise<Lead[]> {
   const rows = await unwrapMany(
-    "list leads awaiting reply",
-    db.from("leads").select("*").eq("status", "sending").is("replied_at", null)
+    "list leads awaiting reply for account",
+    db
+      .from("leads")
+      .select("*, sends!inner(gmail_account_id)")
+      .eq("status", "sending")
+      .is("replied_at", null)
+      .eq("sends.gmail_account_id", accountId)
   )
 
-  return rows.map(leadFromRow)
+  const seen = new Set<string>()
+
+  return rows
+    .filter((row) => !seen.has(row.id) && seen.add(row.id))
+    .map(leadFromRow)
 }

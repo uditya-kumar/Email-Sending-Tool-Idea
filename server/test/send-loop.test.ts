@@ -519,9 +519,22 @@ mock.module("../src/data/leads.ts", {
       }
     },
 
-    listAwaitingReply: async () =>
+    /*
+     * Faithful to the real inner join on `sends`, not just filtered on the lead:
+     * the reply watcher is built from one account's credentials, so it may only be
+     * handed leads that actually send from that account. Modelling it loosely would
+     * hide a cross-account lead reaching a watcher that cannot see its thread.
+     */
+    listAwaitingReplyForAccount: async (accountId: string) =>
       [...world.leads.values()]
-        .filter((lead) => lead.status === "sending" && lead.repliedAt === null)
+        .filter(
+          (lead) =>
+            lead.status === "sending" &&
+            lead.repliedAt === null &&
+            world.rows.some(
+              (row) => row.lead_id === lead.id && row.gmail_account_id === accountId
+            )
+        )
         .map((lead) => ({ id: lead.id, email: lead.email })),
 
     loadSequence: async (leadId: string) => {
@@ -918,10 +931,87 @@ test("a thread belonging to another account is not checked or cancelled", async 
 
   assert.equal(result.repliesDetected, 0, "the other account's thread must be skipped")
   assert.equal(world.leads.get("lead-ada")!.repliedAt, null)
-  // And this account's own follow-up still goes out — skipping the check must not
-  // also skip the send.
-  assert.equal(deliveriesTo("ada@prospect.test").length, 2)
   assertNoDuplicates("cross-account thread")
+})
+
+test("a lead sending from another account is not even fetched for a reply check", async () => {
+  /*
+   * The scoping half of the same concern, one layer earlier: with the query
+   * unscoped, every account walked every in-flight lead and threw away the ones it
+   * could not see — a `lastSentFor` query each, every minute. `listAwaitingReplyForAccount`
+   * inner-joins `sends`, so a lead with nothing on this account never comes back.
+   *
+   * Asserted through `repliesDetected` rather than by counting queries: a reply *is*
+   * waiting in the thread, so a lead that leaked through would be detected and would
+   * cancel a sequence this account has no business cancelling.
+   */
+  reset()
+  launch("ada")
+  await runTick()
+
+  // Every one of this lead's rows moves to a second mailbox, and a reply lands.
+  for (const row of world.rows.filter((r) => r.lead_id === "lead-ada")) {
+    row.gmail_account_id = "acc2"
+  }
+  const parent = world.rows.find((r) => r.step_position === 0)!
+  world.repliedThreads.set(parent.gmail_thread_id!, new Date())
+
+  const result = await runTick()
+
+  assert.equal(result.repliesDetected, 0, "another account's lead must not be examined")
+  assert.equal(world.leads.get("lead-ada")!.repliedAt, null)
+})
+
+test("a follow-up queued on the wrong account is refused, not sent as a new thread", async () => {
+  /*
+   * **The invariant behind multi-account sending.** A lead's whole sequence goes out
+   * from the mailbox that sent its opening email.
+   *
+   * Gmail's `threadId` is scoped to the account it was issued for, so handing the
+   * parent's thread to a different mailbox does not thread the message — it starts a
+   * fresh conversation, silently, while the code that sets `In-Reply-To` and inherits
+   * the parent's subject all still runs as though threading had worked. The recipient
+   * sees a *second sender* replying inside their existing conversation to a message
+   * that address never sent, quoting a subject from someone else's mailbox: exactly
+   * the shape of a thread-hijacking phish.
+   *
+   * So the assertion is that nothing is delivered. Not sending is recoverable — the
+   * row is `failed`, `last_error` says why, and the UI shows it. Sending is not: the
+   * email is in someone's inbox.
+   *
+   * The state set up here is one the application cannot reach (the launch route pins
+   * the account, `enqueueNextStep` copies it from the parent, and the
+   * `sends_lead_account_affinity` trigger rejects the write) — which is the point.
+   * This asserts the last of those defences, the only one still standing if the
+   * earlier two are ever changed.
+   */
+  reset()
+  launch("ada")
+  await runTick()
+
+  assert.equal(deliveriesTo("ada@prospect.test").length, 1, "the opening email goes out")
+
+  // The opening email was sent from a *different* mailbox than the queued follow-up.
+  const parent = world.rows.find((r) => r.step_position === 0)!
+  parent.gmail_account_id = "acc2"
+
+  const followUp = world.rows.find((r) => r.step_position === 2)!
+  followUp.scheduled_at = new Date(Date.now() - 60_000).toISOString()
+
+  // Several ticks: a *retried* row would eventually deliver the very email the
+  // guard exists to prevent, so one tick would not prove it stays unsent.
+  for (let i = 0; i < 3; i += 1) await runTick()
+
+  assert.equal(
+    deliveriesTo("ada@prospect.test").length,
+    1,
+    "the follow-up must not be delivered from a mailbox that doesn't own the thread"
+  )
+  assert.equal(
+    world.rows.find((r) => r.step_position === 2)!.status,
+    "failed",
+    "and it must be failed permanently rather than retried forever"
+  )
 })
 
 test("a failing reply check is logged per lead and does not stop the tick", async () => {

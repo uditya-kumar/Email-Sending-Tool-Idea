@@ -240,8 +240,8 @@ export function SettingsPage({
       {/* Sender accounts */}
       <section>
         <SectionHeading
-          title="Sender account"
-          description="The Gmail account every email is sent from, how many it may send per day, and how that day is split between follow-ups and new outreach."
+          title="Sender accounts"
+          description="The Gmail accounts email is sent from, how many each may send per day, and how that day is split between follow-ups and new outreach. Connect more than one and new recipients are spread across them — each recipient's whole sequence then stays on the account it started from, in one thread."
         />
         <div className="overflow-hidden rounded-xl border bg-card">
           <Table>
@@ -301,14 +301,23 @@ export function SettingsPage({
                         >
                           <Pencil />
                         </Button>
-                        <Button
-                          variant="destructive"
-                          size="icon-sm"
-                          aria-label="Disconnect account"
-                          onClick={() => onRemoveSender(s)}
-                        >
-                          <Trash2 />
-                        </Button>
+                        {/*
+                          Hidden once the account is already disconnected. It has
+                          no credentials left to revoke, and it is only still listed
+                          because its `sends` rows name it as the sender — pressing
+                          this again would do nothing while looking like it should
+                          finally remove the row.
+                        */}
+                        {s.status !== "revoked" && (
+                          <Button
+                            variant="destructive"
+                            size="icon-sm"
+                            aria-label="Disconnect account"
+                            onClick={() => onRemoveSender(s)}
+                          >
+                            <Trash2 />
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -327,26 +336,30 @@ export function SettingsPage({
           </Table>
         </div>
         {/*
-          Only one account is supported: the test-send and launch paths both
-          refuse with `ambiguous_account` rather than guessing which of several to
-          send from. So once one is connected there is nothing to add.
+          Always available: several accounts is a supported setup, and it is the
+          normal way to raise total volume without pushing any one mailbox past the
+          rate it can send safely. Connecting an address that is already here is
+          harmless — the OAuth callback matches on email and replaces the token,
+          which is also how the "reconnect" link above works.
         */}
-        {senders.length === 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="mt-3 gap-1.5"
-            onClick={onConnect}
-            disabled={connecting}
-          >
-            {connecting ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Plus className="size-4" />
-            )}
-            {connecting ? "Opening Google…" : "Connect Gmail account"}
-          </Button>
-        )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-3 gap-1.5"
+          onClick={onConnect}
+          disabled={connecting}
+        >
+          {connecting ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Plus className="size-4" />
+          )}
+          {connecting
+            ? "Opening Google…"
+            : senders.length
+              ? "Connect another Gmail account"
+              : "Connect Gmail account"}
+        </Button>
       </section>
 
       {/* Tracking */}

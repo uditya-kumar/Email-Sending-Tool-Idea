@@ -97,7 +97,7 @@ interface ComposeFlowProps {
   onBack: () => void
   /** Flush pending content edits — awaited before a test send. */
   onFlush: () => Promise<void>
-  /** Connected Gmail address — the test send needs one to send from. */
+  /** A connected Gmail address — gates the test send and prefills its recipient. */
   senderEmail?: string | undefined
 }
 

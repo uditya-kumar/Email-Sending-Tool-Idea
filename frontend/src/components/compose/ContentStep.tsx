@@ -49,7 +49,7 @@ interface ContentStepProps {
   leadId: string
   /** True while a structural save is in flight — the sequence rail is read-only then. */
   busy?: boolean | undefined
-  /** Connected Gmail address — the test send needs one to send from. */
+  /** A connected Gmail address — gates the test send and prefills its recipient. */
   senderEmail?: string | undefined
 }
 

@@ -86,6 +86,37 @@ export class SendQueue {
   }
 
   /**
+   * How many distinct leads are pinned to this account with work still queued.
+   *
+   * The tie-breaker when several accounts are equally idle, which first thing in
+   * the morning is all of them. `sentToday` cannot spread a batch of launches on
+   * its own: it only moves once an email has actually gone out, so ten leads
+   * launched at 09:00 for a 15:00 send would all see the same zeroes and all pick
+   * the same mailbox. Counting *assigned* work is what makes the balance happen at
+   * launch time.
+   *
+   * Counted over `pending` and `sending` only. A `sent` row is finished work and is
+   * already reflected in `sentToday`, so including it would penalise an account
+   * twice for the same email — and permanently, since sent rows are never deleted.
+   *
+   * Distinct leads rather than rows, because a lead is what gets assigned: one with
+   * a queued follow-up and one with a queued opening email are the same amount of
+   * commitment as far as this decision goes.
+   */
+  async countActiveLeads(accountId: string): Promise<number> {
+    const rows = await unwrapMany(
+      "count active leads for account",
+      db
+        .from("sends")
+        .select("lead_id")
+        .eq("gmail_account_id", accountId)
+        .in("status", ["pending", "sending"])
+    )
+
+    return new Set(rows.map((row) => row.lead_id)).size
+  }
+
+  /**
    * Record a successful send.
    *
    * All three Gmail identifiers are stored: the message id for Gmail API calls,

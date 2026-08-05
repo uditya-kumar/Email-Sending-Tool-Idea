@@ -49,6 +49,14 @@ export const testSendSchema = z.object({
    * fallback value, which is exactly what the preview shows.
    */
   leadId: uuidSchema.optional(),
+  /**
+   * Which connected Gmail to send the test from. The UI omits it — see
+   * `accountForTest`, which then prefers the account this lead's real sequence is
+   * pinned to, so the test arrives from the address the launch will actually use.
+   * Accepted so a specific mailbox can be exercised deliberately (checking a
+   * newly connected account's signature, or that its token still works).
+   */
+  gmailAccountId: uuidSchema.optional(),
 })
 
 export type TestSendBody = z.infer<typeof testSendSchema>
@@ -56,9 +64,10 @@ export type TestSendBody = z.infer<typeof testSendSchema>
 /** `POST /api/leads/:id/launch` */
 export const launchSchema = z.object({
   /**
-   * Which connected Gmail to send from. Optional because there is normally one:
-   * omitted means "the only active account", and having several without saying
-   * which is a 409 rather than an arbitrary pick.
+   * Which connected Gmail to send from. Usually omitted: the server prefers the
+   * account this lead's sequence is already pinned to, and otherwise balances new
+   * leads across the active accounts (`pickAccountForLead`). Naming one that
+   * contradicts an existing pin is a 409, not an override — see that function.
    */
   gmailAccountId: uuidSchema.optional(),
 })

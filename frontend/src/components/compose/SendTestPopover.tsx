@@ -20,9 +20,14 @@ import { isPersistedStepId } from "@/lib/sequences"
 
 interface SendTestPopoverProps {
   /**
-   * The Gmail account connected in Settings — undefined when none is, which is
-   * also what blocks the send. Doubles as the prefilled recipient, since a test
-   * almost always goes to yourself.
+   * A connected Gmail address, or undefined when none is connected — which is what
+   * blocks the send. Used as the prefilled *recipient*, since a test almost always
+   * goes to yourself.
+   *
+   * Not the address it sends *from*: with several accounts connected the server
+   * chooses that per recipient (preferring the one the lead's real sequence is
+   * pinned to), which is why the confirmation toast reports `result.from` rather
+   * than echoing this back.
    */
   senderEmail?: string | undefined
   /**

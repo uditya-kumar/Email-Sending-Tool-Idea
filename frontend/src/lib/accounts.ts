@@ -30,8 +30,16 @@ export function useSenders(): {
   senders: SenderAccount[]
   loading: boolean
   error: string | null
-  /** Re-read after a connect or disconnect. */
-  refresh: () => Promise<void>
+  /**
+   * Re-read after a connect or disconnect, returning what it read — or `null` if
+   * the re-read itself failed.
+   *
+   * The rows are returned as well as stored because a caller that has just
+   * disconnected an account needs to say what that left behind, and the `senders`
+   * state it can see is still the pre-disconnect list until React re-renders.
+   * Reading it there would describe the wrong world.
+   */
+  refresh: () => Promise<SenderAccount[] | null>
 } {
   const [senders, setSenders] = useState<SenderAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -39,10 +47,13 @@ export function useSenders(): {
 
   const refresh = useCallback(async () => {
     try {
-      setSenders(await loadSenders())
+      const rows = await loadSenders()
+      setSenders(rows)
       setError(null)
+      return rows
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Couldn't load accounts.")
+      return null
     } finally {
       setLoading(false)
     }

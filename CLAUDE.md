@@ -1,11 +1,12 @@
 # CLAUDE.md — Cold Email Outreach Tool
 
 ## What this is
-An **internal, single-user** cold-email / outreach tool. One user (the owner), one connected
-Gmail account. **No multi-tenant, no billing, no public signups.** Goal: quick idea → production
-**without over-engineering**. Inspired by Hunter.io Campaigns.
+An **internal, single-user** cold-email / outreach tool. One user (the owner), who may connect
+**one or more** of their own Gmail accounts to send from. **No multi-tenant, no billing, no public
+signups.** Goal: quick idea → production **without over-engineering**. Inspired by Hunter.io
+Campaigns.
 
-## Features (all 6 required — all built)
+## Features (6 required — all built, plus multi-account)
 1. **Leads table** — editable grid. Actual columns: Email, First/Last name, Company, Personalization
    Line, Job Title, Website, Send time (IST), Status, Opens/clicks. CSV import supported.
 2. **Email template with merge tags + preview** — rich-text template with attribute/merge tags
@@ -20,6 +21,9 @@ Gmail account. **No multi-tenant, no billing, no public signups.** Goal: quick i
 6. **Gmail sending + daily cap** — send through the user's own Gmail via Gmail API (OAuth2), with a
    per-account **daily cap** (`gmail_accounts.daily_limit`) split between follow-ups and new outreach
    (`follow_up_share_pct`, see `shared/send-budget.ts`), plus **random jitter** between sends.
+7. **Multiple sender accounts** — connect several Gmails and new leads are distributed across them by
+   *proportional headroom* (`shared/assign-account.ts`), so each carries work in step with its own
+   cap. See the affinity rule below: distribution applies to **new leads only**.
 
 ## Architecture
 - **Frontend talks directly to Supabase** (supabase-js) for ordinary CRUD — leads, templates,
@@ -46,8 +50,9 @@ supabase/  → schema.sql (source of truth) + migrations/
 **`shared/` is load-bearing, not a convenience.** The preview and the real send must use one
 renderer, one IST conversion and one set of sequence rules — a second implementation on the server
 would let the preview lie about what actually gets sent. Holds: `types.ts`, `merge-tags.ts`,
-`time.ts`, `schedule.ts`, `sequence.ts`, `send-budget.ts`, `attachments.ts`, `mappers.ts`,
-`settings.ts`, `leads.ts`, and generated `database.types.ts` (`npm run db:types` in `server/`).
+`time.ts`, `schedule.ts`, `sequence.ts`, `send-budget.ts`, `assign-account.ts`, `attachments.ts`,
+`mappers.ts`, `settings.ts`, `leads.ts`, and generated `database.types.ts` (`npm run db:types` in
+`server/`).
 
 ## Locked stack
 
@@ -105,9 +110,11 @@ rebuild from scratch.
 - `sequence_steps` — **per-lead**, keyed on `lead_id` (not `template_id`): position, kind, name,
   subject, body_html, wait_days. A template is *copied* onto a lead, so editing a template never
   rewrites a sequence already in flight.
-- `sends` — one row per outbound email: lead_id, step_id, step_position, is_follow_up, status,
-  scheduled_at, claimed_at, sent_at, subject/body rendered, gmail_message_id, gmail_thread_id,
-  rfc822_message_id, tracking_id, attempt_count, last_error
+- `sends` — one row per outbound email: lead_id, step_id, step_position, **gmail_account_id**,
+  is_follow_up, status, scheduled_at, claimed_at, sent_at, subject/body rendered, gmail_message_id,
+  gmail_thread_id, rfc822_message_id, tracking_id, attempt_count, last_error. `gmail_account_id` is
+  pinned at launch and copied to every later step — see the affinity rule below; the
+  `sends_lead_account_affinity` trigger rejects a row that disagrees with the lead's other sends.
 - `events` — send_id, type (open|click|reply), url, user_agent, ip, created_at
 - `gmail_accounts` — encrypted refresh/access tokens, daily_limit, follow_up_share_pct, status
   (plus the `gmail_accounts_public` view, which omits the token columns)
@@ -149,8 +156,31 @@ check races).
   in their pixel and links forever. Migrating requires keeping a Caddy site block for the old
   hostname pointed at the same backend, or past recipients' clicks 404.
 - **Gmail limits**: ~500 recipients/day (personal), ~2000 (Workspace). For cold outreach keep volume
-  low (20–50/day) with jitter — deliverability degrades long before the hard cap.
+  low (20–50/day) with jitter — deliverability degrades long before the hard cap. These are
+  **per account**, which is the honest reason to connect several: total volume rises without pushing
+  any one mailbox past what it can send safely. Raising one account's `daily_limit` instead does not.
 - **Follow-ups go in the same thread** (set `threadId` + `References`/`In-Reply-To`) so they look natural.
+- **One lead, one mailbox — for the whole sequence.** Gmail's `threadId` is scoped to the account it
+  was issued for, so a follow-up sent from a *different* mailbox does not fail: it silently starts a
+  new thread while `In-Reply-To` and the inherited subject are still set. The recipient then sees a
+  second sender inside their conversation replying to a message that address never sent — a
+  thread-hijacking phish, and the spam report is deserved. Defended four times over, deliberately:
+  the launch route pins `gmail_account_id` (`server/src/email/pick-account.ts`), `enqueueNextStep`
+  copies it **from the parent send** rather than from the ticking account, `threadingFor` throws
+  `WrongAccountError` and fails the row permanently rather than degrading to a new thread, and the
+  `sends_lead_account_affinity` trigger rejects the write outright. Never relax any of these, and
+  never "fix" a wrong-account follow-up by letting it send untethered.
+- **Distribution is for new leads only.** `shared/assign-account.ts` is consulted for an opening
+  email and never for a follow-up. It ranks by **proportional headroom** (`sentToday / dailyLimit`),
+  not round-robin — accounts carry different caps, so alternating would exhaust a fresh 5/day mailbox
+  while a warmed 50/day one idled — and breaks ties on `activeLeads`, because `sentToday` only moves
+  after delivery and a morning batch would otherwise all pick the same mailbox.
+- **Disconnecting an account that has sent anything retires it, not deletes it.** `sends`' FK to
+  `gmail_accounts` is `ON DELETE NO ACTION`, so a DELETE raises 23503 — correctly: that column is the
+  record of which mailbox each email came from *and* the pin holding a live sequence to its thread.
+  A cascade would erase delivery history, a SET NULL would unpin sequences mid-flight. So the row is
+  marked `revoked` with its tokens cleared, stays listed in Settings, and is revived by connecting
+  the same address again. Only a never-used account is deleted outright.
 - **Attachments cap at 3.5 MB** (`MAX_ATTACHMENT_BYTES` in `shared/attachments.ts`) — base64 inflates
   by ~33%, so `GmailMailer`'s 5,000,000-char `MAX_RAW_LENGTH` puts the true ceiling near 3.75 MB.
   Validate against the shared constant, never against the raw bucket size.
@@ -172,8 +202,10 @@ check races).
 - **Stopping `npm run dev` may not stop the server.** It kills the wrapper, not the `tsx` child — a
   stale scheduler keeps running and **keeps sending real email**. Verify with
   `netstat -ano | grep ":<port>"` and `taskkill //F //PID <pid>`.
-- **Sending days are widened for testing.** `outreach_days` / `follow_up_days` are currently Mon–Sun
-  on purpose. **Restore Mon–Thu before production.**
+- **Sending days are back to production values** — `outreach_days` Mon–Thu, `follow_up_days` Mon–Fri,
+  matching the `settings` column defaults. They were widened to Mon–Sun for testing; if you widen them
+  again, restore them before real sending, and remember a day removed here **postpones** due sends
+  rather than dropping them (`rescheduleStaleAt`), so a backlog drains only on allowed days.
 - `frontend` has no `typecheck` script — use `npm run build` (`tsc -b && vite build`). `server` does.
 - `npx eslint src` in `frontend` reports **7 pre-existing problems** (6 errors, 1 warning) in files
   like `ui/tabs.tsx`. That's the baseline, not something you introduced.

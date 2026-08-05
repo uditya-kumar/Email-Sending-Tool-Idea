@@ -18,10 +18,11 @@ interface ProfileDialogProps {
   /** The logged-in owner. Always present — this is who you are, not what sends. */
   profile: UserProfile
   /**
-   * The Gmail connected for sending, or null when none is. Shown read-only so
-   * it's clear the two are separate: disconnecting it doesn't touch the profile.
+   * Every Gmail connected for sending — often one, but several is a supported
+   * setup. Shown read-only so it's clear these are separate from the profile:
+   * disconnecting one doesn't touch who you're signed in as.
    */
-  sender: SenderAccount | null
+  senders: SenderAccount[]
   /** Saves the edited display name (the only writable field here). */
   onSave: (name: string) => void
 }
@@ -29,13 +30,13 @@ interface ProfileDialogProps {
 /**
  * The profile menu's "Profile" entry. Single-user tool, so this is just the
  * owner's identity: an editable display name plus their address. The sending
- * account is a separate thing entirely and is only reported here.
+ * accounts are a separate thing entirely and are only reported here.
  */
 export function ProfileDialog({
   open,
   onOpenChange,
   profile,
-  sender,
+  senders,
   onSave,
 }: ProfileDialogProps) {
   return (
@@ -48,7 +49,7 @@ export function ProfileDialog({
         <ProfileForm
           key={open ? profile.email : "closed"}
           profile={profile}
-          sender={sender}
+          senders={senders}
           onOpenChange={onOpenChange}
           onSave={onSave}
         />
@@ -59,7 +60,7 @@ export function ProfileDialog({
 
 function ProfileForm({
   profile,
-  sender,
+  senders,
   onOpenChange,
   onSave,
 }: Omit<ProfileDialogProps, "open">) {
@@ -100,16 +101,27 @@ function ProfileForm({
         </div>
 
         <div className="space-y-2">
-          <Label>Sending account</Label>
-          {/* Read-only: connected and capped in Settings, not here. */}
-          {sender ? (
-            <p className="text-sm text-foreground">
-              {sender.email}
-              <span className="text-muted-foreground">
-                {" "}
-                · {sender.dailyLimit}/day
-              </span>
-            </p>
+          <Label>
+            {senders.length > 1 ? "Sending accounts" : "Sending account"}
+          </Label>
+          {/*
+            Read-only: connected and capped in Settings, not here. Every account
+            is listed rather than just the first — with several connected, the one
+            a given recipient sends from is decided per recipient, so naming only
+            one here would misreport where mail comes from.
+          */}
+          {senders.length ? (
+            <div className="space-y-0.5">
+              {senders.map((sender) => (
+                <p key={sender.id} className="text-sm text-foreground">
+                  {sender.email}
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · {sender.dailyLimit}/day
+                  </span>
+                </p>
+              ))}
+            </div>
           ) : (
             <p className="text-sm text-muted-foreground">
               None connected — add one in Settings to send email.

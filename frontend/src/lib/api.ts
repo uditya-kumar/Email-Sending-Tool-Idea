@@ -172,14 +172,19 @@ export interface LaunchResult {
  *
  * The server validates everything that would otherwise fail silently three days
  * later — already replied, already launched, no sequence, no email step, empty
- * subject, empty body, no or ambiguous Gmail account — and answers with a 409 and a
+ * subject, empty body, no connected Gmail account — and answers with a 409 and a
  * stable `code` for each. Those messages are written to be shown as-is.
  */
 export async function launchLead(leadId: string): Promise<LaunchResult> {
   return request<LaunchResult>(`/api/leads/${leadId}/launch`, {
     method: "POST",
-    // No `gmailAccountId`: there is normally one connected account, and the server
-    // answers `ambiguous_account` rather than guessing when there are several.
+    /*
+     * No `gmailAccountId` — the server chooses, and it has the two things this side
+     * doesn't: which mailbox this recipient is already committed to (a relaunch has
+     * to reuse it, or the follow-ups reply into a thread from a different sender),
+     * and each account's load today. Naming one here would be a guess overriding
+     * both. Which one it picked comes back as `from`.
+     */
     body: {},
   })
 }

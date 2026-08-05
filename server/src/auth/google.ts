@@ -262,12 +262,35 @@ async function findByEmail(userId: string, email: string): Promise<GmailAccountR
 }
 
 /**
- * Revoke at Google, then delete locally.
+ * Revoke at Google, then remove locally.
  *
- * That order matters: deleting first would lose the only copy of the refresh
+ * That order matters: removing first would lose the only copy of the refresh
  * token and leave the grant live in the user's Google account forever. A failed
- * revoke is logged and the delete proceeds — an unusable local row is worse than
+ * revoke is logged and the removal proceeds — an unusable local row is worse than
  * a stale grant the user can remove themselves.
+ *
+ * ## Why an account that has sent anything is retired rather than deleted
+ *
+ * `sends.gmail_account_id` is `NOT NULL` with an `ON DELETE NO ACTION` foreign
+ * key, so a DELETE here raises 23503 the moment one email has gone out — and it
+ * should. That column is not decoration: it records which mailbox a message came
+ * from, and it is what pins the rest of the lead's sequence to the same thread. A
+ * cascade would erase delivery history; a SET NULL would strip the pin off live
+ * sequences and let their follow-ups be sent from somewhere else.
+ *
+ * So an account with history is marked `revoked` and has its tokens cleared
+ * instead. That is the same outcome the user asked for — the credentials are gone
+ * at Google and locally, and nothing can send from it — while `sends` keeps
+ * pointing at a row that can still name the mailbox. A lead mid-sequence on it
+ * then reports "reconnect this account" (see `pickAccountForLead`) rather than
+ * silently continuing from a different sender.
+ *
+ * An account that never sent anything is deleted outright, so a mistyped
+ * connection leaves nothing behind.
+ *
+ * A retired row is fully revived by connecting the same address again:
+ * `completeConsent` matches it on email and writes a fresh token with
+ * `status: 'active'`, which is the same path the Reconnect button uses.
  */
 export async function disconnectAccount(accountId: string, userId: string): Promise<void> {
   const account = await unwrap(
@@ -288,10 +311,40 @@ export async function disconnectAccount(accountId: string, userId: string): Prom
     const client = newOAuthClient()
     await client.revokeToken(decryptForRevoke(account))
   } catch (error) {
-    log.warn({ err: error, accountId }, "Could not revoke the Google token; deleting anyway")
+    log.warn({ err: error, accountId }, "Could not revoke the Google token; removing anyway")
   }
 
+  // Drop the cached OAuth client first, so nothing in flight can keep sending
+  // from this account between the revoke and the write.
   forgetAccount(accountId)
+
+  const used = await hasSends(accountId)
+
+  if (used) {
+    await unwrap(
+      "retire Gmail account",
+      db
+        .from("gmail_accounts")
+        .update({
+          status: "revoked",
+          /*
+           * The token is already dead at Google; this is so it is not sitting in
+           * the database either. Emptied rather than nulled because the column is
+           * `NOT NULL` — and an empty string cannot decrypt, so any code path that
+           * tried to use it would fail loudly rather than send.
+           */
+          refresh_token_enc: "",
+          access_token_enc: null,
+          access_token_expires_at: null,
+        })
+        .eq("id", accountId)
+        .eq("user_id", userId)
+        .select("id")
+    )
+
+    log.info({ accountId, email: account.email }, "Gmail account retired (has send history)")
+    return
+  }
 
   await unwrap(
     "delete Gmail account",
@@ -299,6 +352,16 @@ export async function disconnectAccount(accountId: string, userId: string): Prom
   )
 
   log.info({ accountId, email: account.email }, "Gmail account disconnected")
+}
+
+/** Has this account ever been recorded as the sender of a queued or delivered email? */
+async function hasSends(accountId: string): Promise<boolean> {
+  const rows = await unwrapMany(
+    "check for sends on account",
+    db.from("sends").select("id").eq("gmail_account_id", accountId).limit(1)
+  )
+
+  return rows.length > 0
 }
 
 /**

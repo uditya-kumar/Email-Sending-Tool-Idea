@@ -2,8 +2,8 @@ import { Router } from "express"
 import { currentUser, requireUser } from "../auth/requireUser.ts"
 import { findLead, loadSequence, setLeadStatus, type PositionedStep } from "../data/leads.ts"
 import { loadSettings } from "../data/settings.ts"
-import { listAccountsForUser } from "../email/accounts.ts"
-import { AccountReauthRequiredError, ConflictError, NotFoundHttpError } from "../http/errors.ts"
+import { pickAccountForLead } from "../email/pick-account.ts"
+import { ConflictError, NotFoundHttpError } from "../http/errors.ts"
 import { route } from "../http/handler.ts"
 import { idParamsSchema, launchSchema, type IdParams, type LaunchBody } from "../http/schemas.ts"
 import { desiredFollowUpTime, firstSendAt } from "../scheduler/schedule.ts"
@@ -11,7 +11,6 @@ import { sendQueue } from "../scheduler/send-queue.ts"
 import { sequenceSendFromRow } from "../../../shared/mappers.ts"
 import { firstEmailStep } from "../../../shared/sequence.ts"
 import { loggerFor } from "../logger.ts"
-import type { GmailAccountRow } from "../db.ts"
 
 /**
  * Launch and cancel, per recipient.
@@ -55,7 +54,15 @@ leadsRouter.post(
         )
       }
 
-      const account = await pickAccount(user.id, body.gmailAccountId)
+      /*
+       * With several mailboxes connected this balances new leads between them, and —
+       * more importantly — reuses the one this lead is already committed to. The
+       * account is pinned onto the `sends` row here rather than chosen at send time,
+       * because Gmail's `threadId` is per-account: a follow-up sent from a different
+       * mailbox does not join the thread, it starts a new one under a second
+       * sender's name.
+       */
+      const account = await pickAccountForLead(user.id, lead.id, body.gmailAccountId)
       const steps = await loadSequence(lead.id)
       const opening = requireOpeningEmail(steps)
       const settings = await loadSettings(user.id)
@@ -268,42 +275,6 @@ leadsRouter.get(
     }
   })
 )
-
-/**
- * Which Gmail to send from.
- *
- * The account is pinned onto the `sends` row at launch rather than chosen at send
- * time, because a follow-up has to go out from the same mailbox that owns the
- * thread — Gmail's `threadId` is per-account and threading breaks otherwise.
- */
-async function pickAccount(userId: string, requestedId?: string): Promise<GmailAccountRow> {
-  const accounts = await listAccountsForUser(userId)
-
-  if (accounts.length === 0) {
-    throw new ConflictError("Connect a Gmail account in Settings first.", "no_account")
-  }
-
-  if (requestedId) {
-    const requested = accounts.find((account) => account.id === requestedId)
-    if (!requested) throw new NotFoundHttpError("That Gmail account isn't connected.")
-    if (requested.status !== "active") throw new AccountReauthRequiredError()
-    return requested
-  }
-
-  const active = accounts.filter((account) => account.status === "active")
-  const [account, ...rest] = active
-
-  if (!account) throw new AccountReauthRequiredError()
-
-  if (rest.length > 0) {
-    throw new ConflictError(
-      "More than one Gmail account is connected — say which one to send from.",
-      "ambiguous_account"
-    )
-  }
-
-  return account
-}
 
 /**
  * The opening email, validated.

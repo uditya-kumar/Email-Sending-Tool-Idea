@@ -20,7 +20,7 @@ import type { TemplatesStore } from "@/lib/use-templates"
 interface TemplatesPageProps {
   /** Templates plus their persistence — see `useTemplates`. */
   store: TemplatesStore
-  /** Connected Gmail address — the test send needs one to send from. */
+  /** A connected Gmail address — gates the test send and prefills its recipient. */
   senderEmail?: string | undefined
 }
 

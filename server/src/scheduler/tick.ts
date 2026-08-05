@@ -33,7 +33,7 @@ import {
 import { loadSettings } from "../data/settings.ts"
 import {
   findLeadById,
-  listAwaitingReply,
+  listAwaitingReplyForAccount,
   loadSequence,
   markLeadReplied,
   setLeadStatus,
@@ -42,6 +42,7 @@ import {
 import { recordEvent } from "../data/events.ts"
 import { nextEmailAfter } from "../../../shared/sequence.ts"
 import { splitBudget } from "../../../shared/send-budget.ts"
+import { sameAccountAsThread } from "../../../shared/assign-account.ts"
 import type { GmailAccountRow, SendRow } from "../db.ts"
 import type { AllSettings, Lead } from "../../../shared/types.ts"
 import { loggerFor } from "../logger.ts"
@@ -72,6 +73,17 @@ import { loggerFor } from "../logger.ts"
  */
 
 const log = loggerFor("tick")
+
+/**
+ * A follow-up whose queued account is not the one that owns its thread.
+ *
+ * Its own class so `handleSendError` can fail it permanently: retrying cannot fix
+ * it — the assignment is wrong, not the moment — and five attempts would just be
+ * five chances to get the account right by accident.
+ */
+class WrongAccountError extends Error {
+  override readonly name = "WrongAccountError"
+}
 
 export interface TickResult {
   accounts: number
@@ -621,6 +633,17 @@ async function handleSendError(error: unknown, context: ProcessSendContext): Pro
     return "failed"
   }
 
+  /*
+   * Wrong mailbox for this thread. Permanent for the same reason an empty step is:
+   * no amount of waiting reassigns the row, and `last_error` puts the reason where
+   * the UI shows it. Only this row is failed — the account is fine and its other
+   * sends are unaffected, so the batch continues.
+   */
+  if (error instanceof WrongAccountError) {
+    await sendQueue.markPermanentlyFailed(send.id, error)
+    return "failed"
+  }
+
   if (error instanceof GmailAuthError) {
     // The account, not the message, is broken: release the row untouched so it
     // goes out unchanged once the user reconnects.
@@ -670,6 +693,32 @@ async function threadingFor(
       "Follow-up has no parent thread; sending as a new message"
     )
     return { parentSubject: null, headers: {} }
+  }
+
+  /*
+   * The thread belongs to a different mailbox than the one about to send. Refused
+   * outright — this is the one case that must not degrade to "send it as a new
+   * message".
+   *
+   * Gmail's `threadId` is scoped to the account it was issued for, so the send
+   * would not thread: the recipient would get a *second sender* appearing inside
+   * their conversation, replying to a message that account never sent, quoting a
+   * subject from another mailbox. That is indistinguishable from a thread-hijacking
+   * phishing attempt, and the spam report it earns is the correct response to it.
+   * Not sending is recoverable; sending that is not.
+   *
+   * Unreachable through the normal paths — the launch route pins the account and
+   * `enqueueNextStep` copies it from the parent, with a database trigger
+   * (`sends_lead_account_affinity`) behind both. It is checked anyway because this
+   * is the last point at which the mismatch is still catchable, and one line here
+   * is cheaper than the alternative being wrong.
+   */
+  if (!sameAccountAsThread(parent.gmail_account_id, send.gmail_account_id)) {
+    throw new WrongAccountError(
+      `This follow-up is queued on a different Gmail account than the one that owns ` +
+        `the thread (${parent.gmail_account_id}). Not sending: it would appear as a ` +
+        `second sender inside the recipient's existing conversation.`
+    )
   }
 
   return {
@@ -734,7 +783,16 @@ async function enqueueNextStep(context: EnqueueContext): Promise<void> {
     user_id: account.user_id,
     lead_id: lead.id,
     step_id: next.step.id,
-    gmail_account_id: account.id,
+    /*
+     * **`send.gmail_account_id`, not `account.id`.** They are the same value today
+     * — the row was claimed by this account — but they are not the same *fact*, and
+     * the difference is the whole thread-affinity guarantee. This follow-up will be
+     * threaded onto the message `send` just delivered, so it has to leave from the
+     * mailbox that owns that thread. Copying it from the parent row states the rule
+     * in the one place it has to hold, instead of relying on the claim and the
+     * enqueue never drifting apart.
+     */
+    gmail_account_id: send.gmail_account_id,
     step_position: next.step.position,
     is_follow_up: true,
     status: "pending",
@@ -758,7 +816,17 @@ async function enqueueNextStep(context: EnqueueContext): Promise<void> {
  * not stop the whole tick from sending.
  */
 async function detectReplies(account: GmailAccountRow): Promise<number> {
-  const leads = await listAwaitingReply()
+  /*
+   * Scoped to this account's own leads, not every in-flight lead.
+   *
+   * Unscoped, each account re-examined all N leads and skipped the ones belonging
+   * to another mailbox — after a `lastSentFor` query each. With one account that is
+   * exactly right and costs nothing; with three it is 3N queries to do N leads'
+   * work, every minute, and the waste grows with the product of accounts and leads.
+   * Filtering in the database also means an account with no leads of its own makes
+   * no Gmail calls at all.
+   */
+  const leads = await listAwaitingReplyForAccount(account.id)
   if (leads.length === 0) return 0
 
   const watcher = replyWatcherFor(account)
@@ -771,6 +839,13 @@ async function detectReplies(account: GmailAccountRow): Promise<number> {
       // No thread yet means nothing has been delivered, so there is nothing to
       // reply to.
       if (!parent?.gmail_thread_id) continue
+      /*
+       * Kept despite the query above already filtering by account. That filter finds
+       * leads with *any* send on this account; this checks the specific parent whose
+       * thread is about to be read — and a Gmail thread id from another mailbox
+       * resolves to nothing there, so a stray one would silently look like "no
+       * reply" and let a follow-up go out after someone had already answered.
+       */
       if (parent.gmail_account_id !== account.id) continue
 
       const check = await watcher.hasInboundReply(parent.gmail_thread_id)

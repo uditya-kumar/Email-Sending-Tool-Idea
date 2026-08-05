@@ -7,6 +7,7 @@ import { AccountReauthRequiredError, ConflictError, NotFoundHttpError } from "..
 import { route } from "../http/handler.ts"
 import { testSendSchema, type TestSendBody } from "../http/schemas.ts"
 import { emailRenderer } from "../render/email-renderer.ts"
+import { sendQueue } from "../scheduler/send-queue.ts"
 import { attachmentStore } from "../storage/attachment-store.ts"
 import { loggerFor } from "../logger.ts"
 import type { GmailAccountRow } from "../db.ts"
@@ -37,7 +38,7 @@ testSendRouter.post(
   route<TestSendBody>({ body: testSendSchema }, async ({ body, req }) => {
     const user = currentUser(req)
 
-    const account = await soleAccount(user.id)
+    const account = await accountForTest(user.id, body.gmailAccountId, body.leadId)
     const resolved = await resolveStep(body.stepId, user.id)
     const lead = await resolveLead(body.leadId, user.id, body.to)
 
@@ -80,13 +81,27 @@ testSendRouter.post(
 )
 
 /**
- * The one account to send from.
+ * Which account to send the test from.
  *
- * Refuses rather than picking when there are several: a test that silently goes
- * out from the wrong address teaches the user the wrong thing about what a launch
- * will do.
+ * A test's job is to show what the real thing will look like, so with several
+ * mailboxes connected it prefers the one **this lead is already assigned to** — the
+ * address the launch would genuinely send from, arriving in the thread it would
+ * genuinely arrive in. Testing from a different mailbox than the campaign will use
+ * would teach the user the wrong thing about their own signature and deliverability.
+ *
+ * An explicit `gmailAccountId` overrides that, for deliberately exercising one
+ * mailbox — a newly connected account's signature, or whether its token still works.
+ *
+ * Falling back to the first active account is fine here in a way it is not at
+ * launch: a test creates no `sends` row, joins no thread and commits the lead to
+ * nothing, so there is no wrong choice to be stuck with — and the response names
+ * the address it used.
  */
-async function soleAccount(userId: string): Promise<GmailAccountRow> {
+async function accountForTest(
+  userId: string,
+  requestedId?: string,
+  leadId?: string
+): Promise<GmailAccountRow> {
   const accounts = await listAccountsForUser(userId)
 
   if (accounts.length === 0) {
@@ -96,24 +111,38 @@ async function soleAccount(userId: string): Promise<GmailAccountRow> {
     )
   }
 
+  if (requestedId) {
+    const requested = accounts.find((account) => account.id === requestedId)
+    if (!requested) throw new NotFoundHttpError("That Gmail account isn't connected.")
+    if (requested.status !== "active") throw new AccountReauthRequiredError()
+    return requested
+  }
+
   const active = accounts.filter((account) => account.status === "active")
 
   if (active.length === 0) {
     throw new AccountReauthRequiredError()
   }
 
-  const [account, ...rest] = active
+  // The mailbox this lead's real sequence is (or will be) tied to. Skipped
+  // entirely for a template test, which has no lead and so no assignment.
+  if (leadId && active.length > 1) {
+    const pinned = await pinnedAccountIdFor(leadId)
+    const owner = pinned && active.find((account) => account.id === pinned)
+    if (owner) return owner
+  }
+
+  const [account] = active
 
   if (!account) throw new AccountReauthRequiredError()
 
-  if (rest.length > 0) {
-    throw new ConflictError(
-      "More than one Gmail account is connected; disconnect the ones you don't send from.",
-      "ambiguous_account"
-    )
-  }
-
   return account
+}
+
+/** The account id on any existing send for a lead, or null if it has none yet. */
+async function pinnedAccountIdFor(leadId: string): Promise<string | null> {
+  const sends = await sendQueue.listForLead(leadId)
+  return sends.find((send) => send.gmail_account_id)?.gmail_account_id ?? null
 }
 
 /**

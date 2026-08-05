@@ -476,8 +476,9 @@ every optional field needs conditional-spread form. Know this before Phase 5.
 - [x] Wire the Connect button → `${VITE_SERVER_URL}/api/auth/google?token=…` (`lib/api.ts`
       `googleConsentUrl()`). A **full navigation**, not a `fetch`: the server answers with a 302 to
       Google's consent screen, and a fetch would follow that redirect in the background where the
-      user can't interact with it. Hidden once an account is connected, since both the test-send and
-      launch paths refuse with `ambiguous_account` rather than guessing between several.
+      user can't interact with it. Always available now that several accounts are supported — it used
+      to be hidden once one was connected, because back then both the test-send and launch paths
+      refused with `ambiguous_account` rather than choosing between them.
 - [x] Handle the return — `lib/oauth-return.ts`. The callback redirects to `/settings?connected=1`,
       but **this app has no router** (the current page is a `useState<AppView>`), so the query string
       is read once at module load, turned into an initial view + a toast, and stripped from the URL so

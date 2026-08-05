@@ -201,7 +201,7 @@ mock.module("../src/data/leads.ts", {
       sendTimeIST: id === "lead-bad" ? "9:3" : "09:30",
       status: "queued", repliedAt: null,
     }),
-    listAwaitingReply: async () => [],
+    listAwaitingReplyForAccount: async () => [],
     // Two email steps, so step 0 going out has a step 1 to enqueue — without which
     // test 1 would take the "sequence complete" path and never reach the throw.
     loadSequence: async () => [
