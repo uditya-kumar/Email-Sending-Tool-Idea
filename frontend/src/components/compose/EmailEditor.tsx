@@ -13,6 +13,7 @@ import {
   Braces,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { countWords } from "@/lib/text"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { InsertAttributeDialog } from "./InsertAttributeDialog"
@@ -34,12 +35,6 @@ interface EmailEditorProps {
   onInsertOutside?: ((tag: string) => void) | undefined
   /** The body took focus — the caller tracks this to resolve `insertTarget`. */
   onBodyFocus?: (() => void) | undefined
-}
-
-/** Count words in a block of text. */
-function countWords(text: string): number {
-  const trimmed = text.trim()
-  return trimmed ? trimmed.split(/\s+/).length : 0
 }
 
 /** One icon button in the formatting toolbar; highlighted while its mark is on. */

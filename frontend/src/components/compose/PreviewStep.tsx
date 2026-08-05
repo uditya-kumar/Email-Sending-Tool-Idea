@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { fullName } from "@/lib/leads"
 import { renderTags, unresolvedTagLabels } from "@/lib/merge-tags"
+import { countHtmlWords } from "@/lib/text"
 import { formatIST } from "@/lib/time"
 import { LeadStatusBadge } from "@/components/common/StatusBadge"
 import type { Lead, SequenceStep } from "@/lib/types"
@@ -246,6 +247,23 @@ function RenderedEmail({ step, lead }: { step: SequenceStep; lead: Lead }) {
           className="prose-email px-4 py-4 text-sm leading-relaxed [&_a]:text-accent [&_a]:underline"
           dangerouslySetInnerHTML={{ __html: bodyHtml }}
         />
+      )}
+      {/*
+        Same footer as the editor's, directly under the body, because this is the
+        count that matters: the editor counts `{{personalization}}` as one word,
+        while this counts the sentence it expands to for this recipient — which is
+        the length that actually lands in their inbox. A cold email that reads as
+        90 words on the Content tab is routinely 130 once merged.
+      */}
+      {!isEmpty && (
+        <div className="flex items-center border-t bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+          <span>
+            Words:{" "}
+            <span className="font-medium text-foreground">
+              {countHtmlWords(bodyHtml)}
+            </span>
+          </span>
+        </div>
       )}
       {/*
         The one warning on this screen, for the same reason the attachment list is
