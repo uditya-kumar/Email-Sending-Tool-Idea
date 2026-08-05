@@ -9,6 +9,7 @@ import { DatabasePage } from "@/components/database/DatabasePage"
 import { ComposeFlow } from "@/components/compose/ComposeFlow"
 import { TemplatesPage } from "@/components/templates/TemplatesPage"
 import { SettingsPage } from "@/components/settings/SettingsPage"
+import { DisconnectSenderDialog } from "@/components/settings/DisconnectSenderDialog"
 import { SenderLimitDialog } from "@/components/settings/SenderLimitDialog"
 import { ProfileDialog } from "@/components/settings/ProfileDialog"
 import { useAuth, signOut } from "@/lib/auth"
@@ -104,6 +105,14 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
    */
   const [profile, setProfile] = useState<UserProfile>(initialProfile)
   const [editingSenderId, setEditingSenderId] = useState<string | null>(null)
+  /**
+   * The account the disconnect dialog is confirming, held by id rather than by
+   * object so the dialog re-reads it from `senders` — a budget edit while it is
+   * open would otherwise leave a stale copy on screen.
+   */
+  const [disconnectingSenderId, setDisconnectingSenderId] = useState<string | null>(
+    null
+  )
   const [profileOpen, setProfileOpen] = useState(false)
   /** True from the Connect click until the browser leaves for Google. */
   const [connecting, setConnecting] = useState(false)
@@ -357,6 +366,19 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
 
   const editingSender = senders.find((s) => s.id === editingSenderId) ?? null
 
+  const disconnectingSender =
+    senders.find((s) => s.id === disconnectingSenderId) ?? null
+
+  /*
+   * What would still be able to send once this one is gone. Computed here so the
+   * dialog can warn that this is the last account *before* the click, rather than
+   * the toast reporting it afterwards. `revoked` and `needs_reauth` accounts are
+   * excluded because neither can actually send.
+   */
+  const remainingActiveAfterDisconnect = senders.filter(
+    (s) => s.id !== disconnectingSenderId && s.status === "active"
+  ).length
+
   /** Disconnect a sending account, and say what that leaves you able to send from. */
   async function removeSender(sender: SenderAccount) {
     try {
@@ -518,7 +540,13 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
               settings={settingsStore.settings}
               onSettingsChange={settingsStore.patch}
               onEditSender={(s) => setEditingSenderId(s.id)}
-              onRemoveSender={(s) => void removeSender(s)}
+              /*
+               * Opens the confirmation rather than disconnecting: the trash sits
+               * beside the Edit pencil, and the consequence — mid-sequence
+               * recipients stalling until a reconnect — is not what "disconnect"
+               * implies on its own.
+               */
+              onRemoveSender={(s) => setDisconnectingSenderId(s.id)}
               onSaveSchedule={() => void saveSettings()}
               settingsLoading={settingsStore.loading}
               settingsDirty={settingsStore.dirty}
@@ -536,6 +564,13 @@ function Workspace({ initialProfile }: { initialProfile: UserProfile }) {
         sender={editingSender}
         onOpenChange={(open) => !open && setEditingSenderId(null)}
         onSave={(dailyLimit, sharePct) => void saveSendBudget(dailyLimit, sharePct)}
+      />
+
+      <DisconnectSenderDialog
+        sender={disconnectingSender}
+        remainingActive={remainingActiveAfterDisconnect}
+        onOpenChange={(open) => !open && setDisconnectingSenderId(null)}
+        onConfirm={(s) => void removeSender(s)}
       />
 
       <ProfileDialog
